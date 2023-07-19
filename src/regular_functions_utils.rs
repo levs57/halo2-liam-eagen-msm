@@ -410,4 +410,5 @@ fn randpoints_witness_test(){
     let regf = compute_divisor_witness(pts.clone());
 
     let _ : Vec<()> = pts.into_iter().map(|pt| assert!(regf.ev(pt) == F::ZERO)).collect();
+
 }

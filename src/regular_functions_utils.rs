@@ -147,24 +147,24 @@ pub struct RegularFunction<C: CurveAffine>{
 }
 
 impl<C: CurveAffine> RegularFunction<C>{
-    fn ev(&self, pt: C) -> C::Base{
+    pub fn ev(&self, pt: C) -> C::Base{
         let pt = pt.coordinates().unwrap();
         self.a.ev(*pt.x()) + self.b.ev(*pt.x())*pt.y()
     }
 
-    fn ev_unchecked(self, x: C::Base, y: C::Base) -> C::Base{
+    pub fn ev_unchecked(self, x: C::Base, y: C::Base) -> C::Base{
         self.a.ev(x) + self.b.ev(x)*y
     }
 
-    fn from_const(x: C::Base) -> Self{
+    pub fn from_const(x: C::Base) -> Self{
         Self::new(Polynomial::new(vec![x]), Polynomial::new(vec![]))
     }
 
-    fn new(a: Polynomial<C::Base>, b: Polynomial<C::Base>) -> Self{
+    pub fn new(a: Polynomial<C::Base>, b: Polynomial<C::Base>) -> Self{
         RegularFunction { a, b }
     }
 
-    fn scale(&self, sc: C::Base) -> Self{
+    pub fn scale(&self, sc: C::Base) -> Self{
         RegularFunction { a: self.a.scale(sc), b: self.b.scale(sc) }        
     }
 }
@@ -263,16 +263,16 @@ pub struct Propagation<C: CurveAffine>{
 
 impl<C: CurveAffine> Propagation<C>{
     
-    fn from_point(pt: C) -> Self{
+    pub fn from_point(pt: C) -> Self{
         if pt == C::identity() {return Self::empty()}
         Propagation{inputs: vec![pt], output: -pt, wtns: linefunc(&pt, &(-pt))}
     }
     
-    fn empty() -> Self{
+    pub fn empty() -> Self{
         Propagation{inputs: vec![], output: C::identity(), wtns: RegularFunction { a: Polynomial::new(vec![C::Base::ONE]), b: Polynomial::new(vec![]) }}
     }
 
-    fn merge(a: Self, b: Self) -> Self {
+    pub fn merge(a: Self, b: Self) -> Self {
         let inputs = a.inputs.into_iter().chain(b.inputs.into_iter()).collect();
         let output = a.output+b.output;
         
@@ -312,14 +312,14 @@ impl<C: CurveAffine> Propagation<C>{
     }
 
 
-    fn maybe_merge(m: MaybePair<C>) -> Self{
+    pub fn maybe_merge(m: MaybePair<C>) -> Self{
         match m {
             MaybePair::Unit(x) => x,
             MaybePair::Pair(x,y) => Self::merge(x,y)
         }
     }
 
-    fn update_mpair_vec(mut pairs: Vec<MaybePair<C>>, upd: Self) -> Vec<MaybePair<C>> {
+    pub fn update_mpair_vec(mut pairs: Vec<MaybePair<C>>, upd: Self) -> Vec<MaybePair<C>> {
         let l = pairs.len();
         if l == 0 {pairs.push(MaybePair::Unit(upd)); return pairs}
         match &pairs[l-1] {
@@ -329,7 +329,7 @@ impl<C: CurveAffine> Propagation<C>{
         pairs
     }
 
-    fn group_merge(arr: Vec<Self>) -> Self{
+    pub fn group_merge(arr: Vec<Self>) -> Self{
         if arr.len() == 0 {panic!()};
         if arr.len() == 1 {return arr[0].clone()}
         let mut pairs  = vec![];
@@ -345,11 +345,8 @@ pub enum MaybePair<C: CurveAffine>{
 }
 
 // utility functions for testing
-fn gen_random_felt<Fz: Field>() -> Fz{
-    Fz::random(OsRng)
-}
 
-fn gen_random_pt<C: CurveAffine>() -> C {
+pub fn gen_random_pt<C: CurveAffine>() -> C {
     let tmp : u128 = random();
     let hasher = C::CurveExt::hash_to_curve("TEST ONLY");
     hasher(&tmp.to_le_bytes()).to_affine()
@@ -409,6 +406,4 @@ fn randpoints_witness_test(){
     let regf = compute_divisor_witness(pts.clone());
 
     let _ : Vec<()> = pts.into_iter().map(|pt| assert!(regf.ev(pt) == F::ZERO)).collect();
-
-    Fq::from(5);
 }

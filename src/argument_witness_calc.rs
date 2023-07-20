@@ -4,7 +4,9 @@ use crate::regular_functions_utils;
 use crate::negbase_utils;
 use crate::regular_functions_utils::RegularFunction;
 use crate::regular_functions_utils::compute_divisor_witness;
+use crate::regular_functions_utils::gen_random_pt;
 
+use ff::FromUniformBytes;
 use ff::{PrimeField, Field};
 use group::{Curve, prime::PrimeCurveAffine};
 use num_bigint::BigInt;
@@ -59,8 +61,26 @@ fn order<Fz: PrimeField>() -> BigInt{
 }
 
 /// Idiotic way of converting value to a montgomery arithmetic. from_repr is angry at me and I don't understand why.
-fn from_u8<Fz: PrimeField>(d: u8) -> Fz {
-    Fz::from(d as u64) * Fz::from(1 as u64).invert().unwrap()
+fn felt_from_u64<Fz: PrimeField>(d: u64) -> Fz {
+    Fz::from(d) * Fz::from(1 as u64).invert().unwrap()
+}
+
+
+/// Generates coefficient < sqrt(p)
+fn gen_random_coeff<Fz : PrimeField>() -> Fz {
+    let x : u128 = random();
+    let y : u128 = random();
+    let o = order::<Fz>();
+    let sq = o.sqrt();
+    let x = BigInt::from(x);
+    let y = BigInt::from(y);
+    let s = (x+pow(BigInt::from(2), 128)*y) % sq;
+    let s = s.to_u32_digits();
+    let sh : Fz = felt_from_u64(pow(2,32));
+    let mut q = s.1;
+    q.reverse();
+    q.into_iter().map(|x|felt_from_u64(x as u64)).fold(Fz::ZERO, |acc, x : Fz| acc*sh + x)
+
 }
 
 /// The core function. It takes a vector of scalars and a vector of points, and returns the witness to lhs of Liam Eagen's
@@ -91,6 +111,7 @@ pub fn compute_lhs_witness<C: CurveAffine>(scalars: &[C::Scalar], pts: &[C], bas
     let mut ret = vec![];
 
     for i in 0..(d as usize){
+
         let mut tmp = Vec::<C>::new();
 
         if carry != C::identity(){        
@@ -99,7 +120,7 @@ pub fn compute_lhs_witness<C: CurveAffine>(scalars: &[C::Scalar], pts: &[C], bas
             }
         }
 
-        carry = (-carry * from_u8::<C::Scalar>(d)).into();
+        carry = (-carry * felt_from_u64::<C::Scalar>(base as u64)).into();
 
         for j in 0..pts.len(){
             match id_by_digit(digits_by_scalar[j][i]) {
@@ -109,11 +130,23 @@ pub fn compute_lhs_witness<C: CurveAffine>(scalars: &[C::Scalar], pts: &[C], bas
         }
 
         tmp.push(-carry);
+
         ret.push(compute_divisor_witness(tmp));
     }
 
     ret.reverse();
 
-    (-carry, ret)
+    (carry, ret)
 
+}
+
+#[test]
+
+fn lhs_test(){
+    let scalars : Vec<Fq> = repeat(gen_random_coeff()).take(100).collect();
+    let pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(100).collect();
+    let a = best_multiexp(&scalars, &pts);
+    let (b, _) = compute_lhs_witness(&scalars, &pts, 5);
+
+    assert!(a==b.into());
 }

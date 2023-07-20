@@ -141,7 +141,7 @@ impl<F:PrimeField> Mul for &Polynomial<F>{
 
 #[derive(Clone)]
 /// A function of the form a(x) + y*b(x) on a curve.
-pub struct RegularFunction<C: CurveAffine>{ //F: PrimeField, C: CurveConfig<F>>{
+pub struct RegularFunction<C: CurveAffine>{
     a: Polynomial<C::Base>,
     b: Polynomial<C::Base>,
 }
@@ -161,7 +161,6 @@ impl<C: CurveAffine> RegularFunction<C>{
     }
 
     fn new(a: Polynomial<C::Base>, b: Polynomial<C::Base>) -> Self{
-//        assert!(a.poly.len()-b.poly.len() < 2);
         RegularFunction { a, b }
     }
 
@@ -411,4 +410,5 @@ fn randpoints_witness_test(){
 
     let _ : Vec<()> = pts.into_iter().map(|pt| assert!(regf.ev(pt) == F::ZERO)).collect();
 
+    Fq::from(5);
 }

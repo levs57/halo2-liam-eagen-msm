@@ -422,14 +422,6 @@ impl<C: CurveAffine> Propagation<C>{
                 }
             );
 
-        let mut a : usize =0; let mut b : usize =0;
-        for mut x in tmp.clone() {
-            match x {
-                MaybePairGlue::In(_) => a+=1,
-                MaybePairGlue::Out(_) => b+=1,
-            }
-        }
-
         Self::group_merge(tmp.into_iter().map(|x| match x {MaybePairGlue::Out(p) => p, _ => panic!()}).collect())
     }
 

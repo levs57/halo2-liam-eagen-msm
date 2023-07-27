@@ -1,5 +1,6 @@
 use crate::negbase_utils::negbase_decompose;
 use crate::negbase_utils::range_check;
+use crate::negbase_utils::id_by_digit;
 use crate::regular_functions_utils;
 use crate::negbase_utils;
 use crate::regular_functions_utils::RegularFunction;
@@ -45,14 +46,6 @@ fn precompute_multiplicities<C: CurveAffine>(pt: &C, base: u8) -> Vec<C>{
         acc = (acc + *pt).into();
     }
     ret
-}
-
-/// used for indexing of precomputed points, will return None if digit is 0
-fn id_by_digit(digit : u8) -> Option<usize> {
-    if digit==0 {
-        return None;
-    }
-    Some((digit-1) as usize)
 }
 
 /// Querying order of a prime field is a bit messy, it gives a string of unspecified format. Therefore:
@@ -143,8 +136,8 @@ pub fn compute_lhs_witness<C: CurveAffine>(scalars: &[C::Scalar], pts: &[C], bas
 #[test]
 
 fn lhs_test(){
-    let scalars : Vec<Fq> = repeat(gen_random_coeff()).take(100).collect();
-    let pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(100).collect();
+    let scalars : Vec<Fq> = repeat(gen_random_coeff()).take(1000).collect();
+    let pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(1000).collect();
     let a = best_multiexp(&scalars, &pts);
     let (b, _) = compute_lhs_witness(&scalars, &pts, 5);
 

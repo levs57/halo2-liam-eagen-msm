@@ -29,6 +29,26 @@ pub fn negbase_decompose(x: &BigInt, base: u8) -> Vec<u8>{
     acc
 }
 
+
+/// used for indexing of digits, will return None if digit is 0
+pub fn id_by_digit(digit : u8) -> Option<usize> {
+    if digit==0 {
+        return None;
+    }
+    Some((digit-1) as usize)
+}
+
+
+pub fn digit_by_id(id : usize) -> u8 {
+    (id+1).try_into().unwrap()
+}
+
+/// Takes bigint as input, and computes the buckets
+/// Each bucket only has digits 0 and 1 in negbase representations
+pub fn buckets(x: &BigInt, base: u8) -> (){
+
+}
+
 #[test]
 
 fn negbase_test() -> (){

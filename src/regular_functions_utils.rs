@@ -8,7 +8,7 @@ use halo2curves::bn256::Fr as F;
 use halo2curves::grumpkin::Fr as Fq;
 use rand_core::OsRng;
 use subtle::CtOption;
-use std::{ops::{Shl, Add, Mul}, cmp, iter::*, fmt::{Display, Formatter}};
+use std::{ops::{Shl, Add, Mul, Shr}, cmp, iter::*, fmt::{Display, Formatter}, time::SystemTime};
 use rand::{Rng, random};
 
 type Grumpkin = grumpkin::G1Affine;
@@ -39,6 +39,85 @@ impl<F: PrimeField> Polynomial<F>{
     pub fn scale(&self, sc: F) -> Self{
         Polynomial::new((&self.poly).into_iter().map(|x|*x*sc).collect())
     }
+
+
+    pub fn mul_naive(a: &Self, b: &Self) -> Self{
+        let mut ret : Vec<F> = repeat(F::ZERO).take(a.poly.len()+b.poly.len()-1).collect();
+        for i in 0..a.poly.len() {
+            for j in 0..b.poly.len() {
+                ret[i+j]+=a.poly[i]*b.poly[j];                
+            }
+        }
+        Polynomial::new(ret)
+    }
+
+    /// according to my tests, this functions is absolutely useless;
+    /// either naive or fft multiplication is always better
+    pub fn mul_karatsuba(a: &Self, b: &Self) -> Self{
+        let d = cmp::max(a.poly.len(), b.poly.len())/2;
+
+        if a.poly.len()<=1 || b.poly.len()<=1 {
+            return Self::mul_naive(a, b)
+        }
+
+        let mut a_l = vec![];
+        let mut a_r = vec![];
+        let mut b_l = vec![];
+        let mut b_r = vec![];
+        for i in 0..a.poly.len() {
+            if i<d {a_l.push(a.poly[i])} else {a_r.push(a.poly[i])}
+        }
+        for i in 0..b.poly.len() {
+            if i<d {b_l.push(b.poly[i])} else {b_r.push(b.poly[i])}
+        }
+
+        let a_l = Polynomial::new(a_l);
+        let a_r = Polynomial::new(a_r);
+        let b_l = Polynomial::new(b_l);
+        let b_r = Polynomial::new(b_r);
+
+        let a_s = &a_l + &a_r;
+        let b_s = &b_l + &b_r;
+
+        let m0 = Self::mul_karatsuba(&a_l, &b_l);
+        let m2 = Self::mul_karatsuba(&a_r, &b_r);
+        let m1 = &Self::mul_karatsuba(&a_s, &b_s) + &(&m0 + &m2).scale(-F::ONE);
+
+        // answer is m0 + m1 x^d + m2 x^{2d}
+
+        &(&m0 + &(&m1>>d)) + &(&m2>>(2*d))
+    }
+
+
+    pub fn mul_fft(&self, other: &Self) -> Self{
+
+        let length = self.poly.len() + other.poly.len()-1;
+        let loglength = log2_floor(length)+1;
+
+        let fgsds = F::ZERO; // amulet of protection against crab demons
+
+        let padded_length = (2 as usize).pow(loglength);
+        let mut a : Vec<F> = (&self.poly).into_iter().chain(repeat(&fgsds)).take(padded_length).map(|x|*x).collect();
+        let mut b : Vec<F> = (&other.poly).into_iter().chain(repeat(&fgsds)).take(padded_length).map(|x|*x).collect();
+        assert!(F::S >= loglength);
+        let omega = F::ROOT_OF_UNITY.pow([(2 as u64).pow((F::S-loglength))]); //this will produce a root of unity of order loglength
+        let omega_inv = F::ROOT_OF_UNITY_INV.pow([(2 as u64).pow((F::S-loglength))]);
+
+
+        let scaling = F::from_str_vartime(&format!("{}", padded_length)).unwrap().invert().unwrap();
+
+        best_fft(&mut a, omega, loglength);
+        best_fft(&mut b, omega, loglength);
+
+        let mut prod : Vec<F> = a.into_iter().zip(b.into_iter()).map(|(x,y)|x*y*scaling).collect();
+        
+        best_fft(&mut prod, omega_inv, loglength);
+
+
+        Polynomial::new(prod.into_iter().take(length).collect())
+        
+    }
+
 }
 
 
@@ -73,6 +152,17 @@ impl<F: PrimeField> Display for Polynomial<F>{
                         )
             )   
     }
+}
+
+impl<F: PrimeField> Shr<usize> for &Polynomial<F>{
+
+    type Output = Polynomial<F>;
+
+    fn shr(self, other:usize) -> Self::Output{
+        let tmp : Vec<F> = repeat(F::ZERO).take(other).chain(self.poly.iter().map(|x|*x)).collect();
+        Polynomial::new(tmp)
+    }
+
 }
 
 impl<F: PrimeField> Add for &Polynomial<F>{
@@ -110,30 +200,8 @@ impl<F:PrimeField> Mul for &Polynomial<F>{
     type Output = Polynomial<F>;
 
     fn mul(self, other: Self) -> Self::Output{
-        let length = self.poly.len() + other.poly.len()-1;
-        let loglength = log2_floor(length)+1;
-
-        let fgsds = F::ZERO; // amulet of protection against crab demons
-
-        let padded_length = (2 as usize).pow(loglength);
-        let mut a : Vec<F> = (&self.poly).into_iter().chain(repeat(&fgsds)).take(padded_length).map(|x|*x).collect();
-        let mut b : Vec<F> = (&other.poly).into_iter().chain(repeat(&fgsds)).take(padded_length).map(|x|*x).collect();
-        assert!(F::S >= loglength);
-        let omega = F::ROOT_OF_UNITY.pow([(2 as u64).pow((F::S-loglength))]); //this will produce a root of unity of order loglength
-        let omega_inv = F::ROOT_OF_UNITY_INV.pow([(2 as u64).pow((F::S-loglength))]);
-
-
-        let scaling = F::from_str_vartime(&format!("{}", padded_length)).unwrap().invert().unwrap();
-
-        best_fft(&mut a, omega, loglength);
-        best_fft(&mut b, omega, loglength);
-
-        let mut prod : Vec<F> = a.into_iter().zip(b.into_iter()).map(|(x,y)|x*y*scaling).collect();
-        
-        best_fft(&mut prod, omega_inv, loglength);
-
-
-        Polynomial::new(prod.into_iter().take(length).collect())
+        if (*self).poly.len() < 32 || other.poly.len() < 32 { return Polynomial::mul_naive(self, other) }
+        self.mul_fft(other)
     }
 }
 
@@ -185,6 +253,11 @@ impl<C: CurveAffine> Mul for &RegularFunction<C>{
         let subst_y2 = Polynomial::new(vec![C::b(), C::a(), C::Base::ZERO, C::Base::ONE]); // x^3 + ax + b
         RegularFunction::new(&(&self.a*&other.a) + &(&(&self.b*&other.b)*&subst_y2), &(&self.a*&other.b) + &(&self.b*&other.a))
     }
+}
+
+/// Idiotic way of converting value to a montgomery arithmetic. from_repr is angry at me and I don't understand why.
+fn felt_from_u64<Fz: PrimeField>(d: u64) -> Fz {
+    Fz::from(d) * Fz::from(1 as u64).invert().unwrap()
 }
 
 // polynomials code probably should be replaced by some proper code at some point
@@ -319,29 +392,62 @@ impl<C: CurveAffine> Propagation<C>{
         }
     }
 
-    pub fn update_mpair_vec(mut pairs: Vec<MaybePair<C>>, upd: Self) -> Vec<MaybePair<C>> {
+    pub fn update_mpair_vec(pairs: &mut Vec<MaybePair<C>>, upd: Self) -> () {
         let l = pairs.len();
-        if l == 0 {pairs.push(MaybePair::Unit(upd)); return pairs}
-        match &pairs[l-1] {
-            MaybePair::Pair(..) => pairs.push(MaybePair::Unit(upd)),
-            MaybePair::Unit(x) => pairs[l-1] = MaybePair::Pair(x.clone(), upd)
+        if l == 0 {pairs.push(MaybePair::Unit(upd))} else {
+            match &pairs[l-1] {
+                MaybePair::Pair(..) => pairs.push(MaybePair::Unit(upd)),
+                MaybePair::Unit(x) => pairs[l-1] = MaybePair::Pair(x.clone(), upd)
+            }
         }
-        pairs
     }
 
     pub fn group_merge(arr: Vec<Self>) -> Self{
         if arr.len() == 0 {panic!()};
         if arr.len() == 1 {return arr[0].clone()}
         let mut pairs  = vec![];
-        Self::group_merge(arr.into_iter().fold(pairs, Self::update_mpair_vec).into_iter().map(Self::maybe_merge).collect())
+        for q in arr.into_iter(){
+            Self::update_mpair_vec(&mut pairs, q);
+        }
+        let mut tmp : Vec<MaybePairGlue<C>> = pairs.into_iter().map(|x|MaybePairGlue::In(x)).collect();
+        parallelize(&mut tmp, |chunk, _|
+            for x in chunk.iter_mut() {
+                let store;
+                let tmp = x.clone();
+                match tmp {
+                    MaybePairGlue::In(m) => {let tmp = Self::maybe_merge(m); store = MaybePairGlue::Out(tmp)},
+                    _ => panic!(),
+                    };
+                *x = store;
+                }
+            );
+
+        let mut a : usize =0; let mut b : usize =0;
+        for mut x in tmp.clone() {
+            match x {
+                MaybePairGlue::In(_) => a+=1,
+                MaybePairGlue::Out(_) => b+=1,
+            }
+        }
+
+        Self::group_merge(tmp.into_iter().map(|x| match x {MaybePairGlue::Out(p) => p, _ => panic!()}).collect())
     }
 
 
 }
 
+
+#[derive(Clone)]
 pub enum MaybePair<C: CurveAffine>{
     Unit(Propagation<C>),
     Pair(Propagation<C>, Propagation<C>),
+}
+
+#[derive(Clone)]
+/// this atrocity is needed to call parallelize
+pub enum MaybePairGlue<C: CurveAffine>{
+    In(MaybePair<C>),
+    Out(Propagation<C>),
 }
 
 // utility functions for testing
@@ -393,6 +499,62 @@ pub fn compute_divisor_witness<C: CurveAffine>(pts: Vec<C>)-> RegularFunction<C>
     assert_eq!(s.poly.len(),4); // checking that division does not pad leading zeros
 
 }
+
+#[test]
+
+fn karatsuba_test(){
+    let p = Polynomial::new(repeat(F::random(OsRng)).take(100).collect());
+    let q = Polynomial::new(repeat(F::random(OsRng)).take(423).collect());
+    let t = F::random(OsRng);
+    assert_eq!(p.ev(t)*q.ev(t), Polynomial::mul_karatsuba(&p, &q).ev(t)); // test multiplication in random point
+
+}
+
+#[test]
+
+fn bench_naive(){
+
+    for i in 1..100 {
+        let p = Polynomial::new(repeat(F::random(OsRng)).take(i).collect());
+        let q = Polynomial::new(repeat(F::random(OsRng)).take(i).collect());
+    
+        let start = SystemTime::now();
+        for _ in 0..10 {
+            let _ = Polynomial::mul_naive(&p, &q);
+        }
+        println!("Time elapsed: {} ms; deg={}", start.elapsed().unwrap().as_millis(), i);
+    }
+}
+
+#[test]
+
+fn bench_karatsuba(){
+    for i in 1..100 {
+        let p = Polynomial::new(repeat(F::random(OsRng)).take(i).collect());
+        let q = Polynomial::new(repeat(F::random(OsRng)).take(i).collect());
+    
+        let start = SystemTime::now();
+        for _ in 0..10 {
+            let _ = Polynomial::mul_karatsuba(&p, &q);
+        }
+        println!("Time elapsed: {} ms; deg={}", start.elapsed().unwrap().as_millis(), i);
+    }}
+
+#[test]
+
+fn bench_best(){
+    for i in 1..100 {
+        let p = Polynomial::new(repeat(F::random(OsRng)).take(i).collect());
+        let q = Polynomial::new(repeat(F::random(OsRng)).take(i).collect());
+    
+        let start = SystemTime::now();
+        for _ in 0..10 {
+            let _ = &p*&q;
+        }
+        println!("Time elapsed: {} ms; deg={}", start.elapsed().unwrap().as_millis(), i);
+    }
+}
+
 
 #[test]
 

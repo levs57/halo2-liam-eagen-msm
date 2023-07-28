@@ -26,7 +26,7 @@ use std::time::SystemTime;
 use std::{ops::{Shl, Add, Mul}, cmp, iter::*, fmt::{Display, Formatter}};
 use rand::{Rng, random};
 
-type Grumpkin = grumpkin::G1Affine;
+type Grumpkin = grumpkin::G1;
 
 fn logb_ceil(x: &BigUint, base: u8) -> u8{
     let mut x = x.clone();
@@ -38,13 +38,23 @@ fn logb_ceil(x: &BigUint, base: u8) -> u8{
     i
 }
 
+trait TestTrait{
+    fn test(x: Self) -> Self;
+}
+
+impl TestTrait for F {
+    fn test(x: F) -> F {
+        x
+    }
+}
+
 /// Returns multiplicities of pt, from 1 to base 
-fn precompute_multiplicities<C: CurveAffine>(pt: &C, base: u8) -> Vec<C>{
+fn precompute_multiplicities<C: CurveExt>(pt: &C, base: u8) -> Vec<C>{
     let mut acc : C = *pt;
     let mut ret = vec![];
-    for i in 0..base {
+    for _ in 0..base {
         ret.push(acc);
-        acc = (acc + *pt).into();
+        acc = acc + *pt;
     }
     ret
 }
@@ -137,9 +147,10 @@ pub fn compute_lhs_witness<C: CurveExt>(scalars: &[C::Scalar], pts: &[C], base: 
 #[test]
 
 fn lhs_test(){
-    let scalars : Vec<Fq> = repeat(gen_random_coeff()).take(1000).collect();
-    let pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(1000).collect();
-    let a = best_multiexp(&scalars, &pts);
+    let scalars : Vec<Fq> = repeat(gen_random_coeff()).take(10000).collect();
+    let pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(10000).collect();
+    let pts_aff : Vec< grumpkin::G1Affine > = pts.iter().map(|x|x.into()).collect();
+    let a = best_multiexp(&scalars, &pts_aff);
     let (b, _) = compute_lhs_witness(&scalars, &pts, 5);
 
     assert!(a==b.into());

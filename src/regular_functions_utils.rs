@@ -13,6 +13,29 @@ use rand::{Rng, random};
 
 type Grumpkin = grumpkin::G1;
 
+trait FftPrecomp {
+    /// returns 2^exp-th power of omega
+    fn omega_pow(exp2: u32) -> Self;
+    /// returns 2^exp-th power of omega inverse
+    fn omega_pow_inv(exp2: u32) -> Self;
+    /// returns (1/2)^exp
+    fn half_pow(exp: u64) -> Self;
+}
+
+impl FftPrecomp for F {
+    fn omega_pow(exp2: u32) -> F {
+        F::ROOT_OF_UNITY.pow([(2 as u64).pow(exp2)])
+    }
+
+    fn omega_pow_inv(exp2: u32) -> F {
+        F::ROOT_OF_UNITY_INV.pow([(2 as u64).pow(exp2)])
+    }
+
+    fn half_pow(exp: u64) -> F {
+        F::TWO_INV.pow([exp])
+    } 
+}
+
 #[derive(Clone)]
 pub struct Polynomial <F: PrimeField> { // this seems to be re-doing some work from halo2::poly...
     pub poly: Vec<F>,

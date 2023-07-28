@@ -83,7 +83,7 @@ fn gen_random_coeff<Fz : PrimeField>() -> Fz {
 /// -3 negbase and symmetric set of digits (-1, 0, 1). Positive digit set gives an advantage with range checks later
 /// while gains from symmetric digit set are likely negligible. Base > 3 are also needed for better lookups.
 /// The scalars are assumed to be in range between 0 and ceil(sqrt(p)).
-pub fn compute_lhs_witness<C: CurveAffine>(scalars: &[C::Scalar], pts: &[C], base: u8)->(C, Vec<RegularFunction<C>>){
+pub fn compute_lhs_witness<C: CurveExt>(scalars: &[C::Scalar], pts: &[C], base: u8)->(C, Vec<RegularFunction<C>>){
     assert!(scalars.len() == pts.len(), "incompatible amount of coefficients");
     let p = order::<C::Scalar>();
     let sq_p = (&p.sqrt()+BigInt::from_bytes_le(Sign::Plus, &[2])).to_biguint().unwrap();

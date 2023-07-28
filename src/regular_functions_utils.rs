@@ -215,10 +215,11 @@ pub struct RegularFunction<C: CurveExt>{
 }
 
 impl<C: CurveExt> RegularFunction<C>{
-    pub fn ev(&self, pt: C::Affine) -> C::Base{
-        let pt : C = pt.into();
-        let (x, y, _) = pt.jacobian_coordinates();
-        self.ev_unchecked(x, y)
+    pub fn ev(&self, pt: C) -> C::Base{
+        let (x, y, z) = pt.jacobian_coordinates();
+        let zinv = z.invert().unwrap();
+        let zinvsq = zinv*zinv;
+        self.ev_unchecked(x*zinvsq,y*zinvsq*zinv)
     }
 
     pub fn ev_unchecked(&self, x: C::Base, y: C::Base) -> C::Base{
@@ -273,8 +274,8 @@ fn felt_from_u64<Fz: PrimeField>(d: u64) -> Fz {
 /// this function returns a line passing through a pair of points
 pub fn linefunc<C: CurveExt>(a: &C, b: &C) -> RegularFunction<C> {
 
-    let (ax, ay, az) = a.jacobian_coordinates();
-    let (bx, by, bz) = b.jacobian_coordinates();
+    let (ax, ay, az) = projective_coords(a);
+    let (bx, by, bz) = projective_coords(b);
 
     let lz = ax*by - ay*bx;
     let lx = ay*bz - az*by;
@@ -286,7 +287,7 @@ pub fn linefunc<C: CurveExt>(a: &C, b: &C) -> RegularFunction<C> {
 
     let c = -(*a+b);
 
-    let (cx, cy, cz) = c.jacobian_coordinates();
+    let (cx, cy, cz) = projective_coords(&c);
 
     return RegularFunction::from_line(ay*cz - az*cy, az*cx-ax*cz, ax*cy - ay*cx);
 }
@@ -314,6 +315,11 @@ impl<C: CurveExt> Propagation<C>{
         Propagation{inputs: vec![], output: C::identity(), wtns: RegularFunction { a: Polynomial::new(vec![C::Base::ONE]), b: Polynomial::new(vec![]) }}
     }
 
+    pub fn from_pair(pt1: C, pt2: C) -> Self {
+        if pt1 == C::identity() {return Self::from_point(pt2)}
+        Propagation{inputs: vec![pt1, pt2], output: -(pt1+pt2), wtns: linefunc(&pt1, &pt2)}
+    }
+
     pub fn merge(a: Self, b: Self) -> Self {
         let inputs = a.inputs.into_iter().chain(b.inputs.into_iter()).collect();
         let output = a.output+b.output;
@@ -330,8 +336,11 @@ impl<C: CurveExt> Propagation<C>{
         let num_a = numerator.a;
         let num_b = numerator.b;
 
-        let ax = ax*(az.invert().unwrap());
-        let bx = bx*(bz.invert().unwrap());
+        let azinv = az.invert().unwrap();
+        let bzinv = bz.invert().unwrap();
+
+        let ax = ax*azinv*azinv;
+        let bx = bx*bzinv*bzinv;
 
         let wtns = RegularFunction::new(num_a.kate_div(ax).kate_div(bx), num_b.kate_div(ax).kate_div(bx));
 
@@ -396,7 +405,28 @@ pub enum MaybePairGlue<C: CurveExt>{
     Out(Propagation<C>),
 }
 
+
+/// computes projective coordinates from Jacobi coordinates
+pub fn projective_coords<C: CurveExt>(pt: &C) -> (C::Base, C::Base, C::Base){
+    let (x,y,z) = pt.jacobian_coordinates();
+    //affine is x/z^2, y/z^3, therefore projective are xz, y, z^3
+    let zsq = z*z;
+    (x*z, y, z*zsq)
+}
+
 // utility functions for testing
+
+pub fn display_felt<F: PrimeField>(val: F) -> String{
+    val
+    .to_repr()
+    .as_ref()
+    .into_iter()
+    .fold(
+        "".to_string(),
+        |acc, val| 
+            format!("{:02x}{}", val, acc)
+        )
+}
 
 pub fn gen_random_pt<C: CurveExt>() -> C {
     let tmp : u128 = random();
@@ -404,12 +434,27 @@ pub fn gen_random_pt<C: CurveExt>() -> C {
     hasher(&tmp.to_le_bytes())
 }
 
+pub fn compute_divisor_witness_partial<C: CurveExt>(pts: Vec<C>)-> (RegularFunction<C>, C) {
+    let mut tmp = vec![];
+    if pts.len()==0 {return (RegularFunction::from_const(C::Base::ONE), C::identity())}
+    let mut i = 0;
+    while i < pts.len()-1 {
+        let a = pts[i];
+        let b = pts[i+1];
+        tmp.push(Propagation::from_pair(a,b));
+        i+=2
+    }
+    if i == pts.len()-1 {tmp.push(Propagation::from_point(pts[i]))}
+
+    let ret = Propagation::group_merge(tmp);
+    (ret.wtns, ret.output)
+}
 
 /// computes a regular function vanishing in a collection of points and minus their sum
-pub fn compute_divisor_witness_partial<C: CurveExt>(pts: Vec<C>)-> (RegularFunction<C>, C) {
-    let tmp = Propagation::group_merge(pts.into_iter().map(Propagation::from_point).collect());
-    (tmp.wtns, tmp.output)
-}
+// pub fn compute_divisor_witness_partial<C: CurveExt>(pts: Vec<C>)-> (RegularFunction<C>, C) {
+//     let tmp = Propagation::group_merge(pts.into_iter().map(Propagation::from_point).collect());
+//     (tmp.wtns, tmp.output)
+// }
 
 /// computes a regular function vanishing in a collection of points, panics if the sum is nonzero
 pub fn compute_divisor_witness<C: CurveExt>(pts: Vec<C>)-> RegularFunction<C> {
@@ -572,19 +617,32 @@ fn bench_best(){
     }
 }
 
+#[test]
+
+fn linefunc_test(){
+    let pt1 = gen_random_pt::<Grumpkin>();
+    let pt2 = gen_random_pt::<Grumpkin>();
+    let line = linefunc(&pt1, &pt2);
+    let pt3 = -(pt1+pt2);
+
+    assert!(line.ev(pt1)==F::ZERO);
+    assert!(line.ev(pt2)==F::ZERO);
+    assert!(line.ev(pt3)==F::ZERO);
+
+}
 
 #[test]
 
 fn randpoints_witness_test(){
-    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(3).collect();
-    let mut pts : Vec<grumpkin::G1Affine> = repeat(gen_random_pt::<Grumpkin>().into()).take(3).collect();
+    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(4).collect();
+    let mut pts : Vec<grumpkin::G1Affine> = repeat(gen_random_pt::<Grumpkin>().into()).take(4).collect();
     let res = best_multiexp(&scalars, &pts);
     pts.push((-res).into());
     scalars.push(Fq::ONE);
 
     let regf = compute_divisor_witness::<Grumpkin>(pts.clone().iter().map(|x|x.into()).collect());
 
-    let _ : Vec<()> = pts.into_iter().map(|pt| assert!(regf.ev(pt) == F::ZERO)).collect();
+    let _ : Vec<()> = pts.into_iter().map(|pt| assert!(regf.ev(pt.into()) == F::ZERO)).collect();
 }
 
 #[test]
@@ -604,6 +662,7 @@ fn randpoints_witness_naive_test(){
 #[test]
 
 fn randpoints_witness_bench(){
+
     let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(1024).collect();
     let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(1024).collect();
     let bases : Vec<grumpkin::G1Affine> = pts.iter().map(|x|x.into()).collect(); 
@@ -619,11 +678,6 @@ fn randpoints_witness_bench(){
     compute_divisor_witness_naive(pts.clone());
     println!("Computed configuration of lines vanishing in 1024 random points in {} ms", start.elapsed().unwrap().as_millis());
 
-
-    let start = SystemTime::now();
-    pts.clone().iter().fold(Grumpkin::identity(), |acc,upd| acc+upd);
-    println!("Computed sum of 1024 random points in {} ms in affine coords", start.elapsed().unwrap().as_millis());
-    
     let start = SystemTime::now();
     let num_threads = rayon_core::current_num_threads();
     let chunk = pts.len() / num_threads;
@@ -641,17 +695,17 @@ fn randpoints_witness_bench(){
 
     println!("Computed sum of 1024 random points in {} ms in projective coordinates", start.elapsed().unwrap().as_millis());
 
-    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(31).collect();
-    let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(31).collect();
+    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(3).collect();
+    let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(3).collect();
     let bases : Vec<grumpkin::G1Affine> = pts.iter().map(|x|x.into()).collect();
     let res = best_multiexp(&scalars, &bases);
     pts.push((-res));
     scalars.push(Fq::ONE);
 
     let start = SystemTime::now();
-    for _ in 0..32 {
+    for _ in 0..256 {
         compute_divisor_witness(pts.clone());    
     }
-    println!("Computed regular function vanishing in 32 random points 32 times in {} ms", start.elapsed().unwrap().as_millis());
+    println!("Computed regular function vanishing in 4 random points 256 times in {} ms", start.elapsed().unwrap().as_millis());
 
 }

@@ -1,4 +1,4 @@
-use ff::{PrimeField, Field};
+use ff::{PrimeField, Field, BatchInvert, BatchInverter};
 use group::{Curve, prime::PrimeCurveAffine, Group};
 use num_bigint::{BigUint, RandomBits};
 use num_traits::Num;
@@ -345,6 +345,8 @@ impl<C: CurveExt> Propagation<C> where C::Base : FftPrecomp{
 
         let num_a = numerator.a;
         let num_b = numerator.b;
+        
+
 
         let azinv = az.invert().unwrap();
         let bzinv = bz.invert().unwrap();
@@ -376,8 +378,11 @@ impl<C: CurveExt> Propagation<C> where C::Base : FftPrecomp{
     }
 
     pub fn group_merge(arr: Vec<Self>) -> Self{
+
         if arr.len() == 0 {panic!()};
         if arr.len() == 1 {return arr[0].clone()}
+
+
         let mut pairs  = vec![];
         for q in arr.into_iter(){
             Self::update_mpair_vec(&mut pairs, q);
@@ -394,6 +399,7 @@ impl<C: CurveExt> Propagation<C> where C::Base : FftPrecomp{
                 *x = store;
                 }
             );
+
 
         Self::group_merge(tmp.into_iter().map(|x| match x {MaybePairGlue::Out(p) => p, _ => panic!()}).collect())
     }
@@ -586,7 +592,7 @@ fn karatsuba_test(){
 
 fn bench_naive(){
 
-    for i in 1..100 {
+    for i in 1..1000 {
         let p = Polynomial::new(repeat(F::random(OsRng)).take(i).collect());
         let q = Polynomial::new(repeat(F::random(OsRng)).take(i).collect());
     
@@ -644,8 +650,8 @@ fn linefunc_test(){
 #[test]
 
 fn randpoints_witness_test(){
-    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(4).collect();
-    let mut pts : Vec<grumpkin::G1Affine> = repeat(gen_random_pt::<Grumpkin>().into()).take(4).collect();
+    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(10000).collect();
+    let mut pts : Vec<grumpkin::G1Affine> = repeat(gen_random_pt::<Grumpkin>().into()).take(10000).collect();
     let res = best_multiexp(&scalars, &pts);
     pts.push((-res).into());
     scalars.push(Fq::ONE);

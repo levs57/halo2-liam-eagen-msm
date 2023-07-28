@@ -138,8 +138,8 @@ pub fn compute_lhs_witness<C: CurveExt>(scalars: &[C::Scalar], pts: &[C], base: 
 #[test]
 
 fn lhs_test(){
-    let scalars : Vec<Fq> = repeat(gen_random_coeff()).take(1000).collect();
-    let pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(1000).collect();
+    let scalars : Vec<Fq> = repeat(gen_random_coeff()).take(10000).collect();
+    let pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(10000).collect();
     let pts_aff : Vec< grumpkin::G1Affine > = pts.iter().map(|x|x.into()).collect();
     let a = best_multiexp(&scalars, &pts_aff);
     let (b, _) = compute_lhs_witness(&scalars, &pts, 5);

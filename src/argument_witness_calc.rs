@@ -22,6 +22,7 @@ use halo2curves::bn256::Fr as F;
 use halo2curves::grumpkin::Fr as Fq;
 use rand_core::OsRng;
 use subtle::CtOption;
+use std::time::SystemTime;
 use std::{ops::{Shl, Add, Mul}, cmp, iter::*, fmt::{Display, Formatter}};
 use rand::{Rng, random};
 

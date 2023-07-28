@@ -464,6 +464,70 @@ pub fn compute_divisor_witness<C: CurveAffine>(pts: Vec<C>)-> RegularFunction<C>
     tmp.0
 }
 
+/// a collection of numerator and denominator lines
+pub struct Arrangement<C: CurveAffine>{
+    pos: Vec<RegularFunction<C>>,
+    neg: Vec<RegularFunction<C>>,
+}
+
+pub enum Glue<C: CurveAffine>{
+    In(C,C),
+    Out(RegularFunction<C>, C),
+}
+
+fn f<C: CurveAffine>(chunk: &mut [Glue<C>]) {
+    for mut tmp in chunk{
+        match tmp {
+            Glue::In(a,b) => {let q:C = (*a+*b).into(); *tmp = Glue::Out(linefunc(&a,&b), -q)},
+            _ => panic!(),
+        }
+    }
+}
+
+pub fn compute_divisor_witness_naive<C: CurveAffine>(pts: Vec<C>) -> Arrangement<C> {
+    let mut pos = pts.clone();
+    let mut neg = vec![];
+
+    let mut ret = Arrangement::<C>{pos : vec![], neg : vec![]};
+
+    let mut tmp = vec![];
+
+    while pos.len()>1 || neg.len()>1 {
+        while pos.len()>1 {
+            tmp.push(Glue::In(pos.pop().unwrap(), pos.pop().unwrap()));
+        }
+
+        parallelize(&mut tmp, |chunk, _|f(chunk));
+        while tmp.len()>0 {
+            let s = tmp.pop().unwrap();
+            match s {
+                Glue::Out(line, sum) => {ret.pos.push(line); neg.push(sum);},
+                _ => panic!(),
+            }
+        }
+
+        while neg.len()>1 {
+            tmp.push(Glue::In(neg.pop().unwrap(), neg.pop().unwrap()));
+        }
+
+        parallelize(&mut tmp, |chunk, _|f(chunk));
+        while tmp.len()>0 {
+            let s = tmp.pop().unwrap();
+            match s {
+                Glue::Out(line, sum) => {ret.neg.push(line); pos.push(sum);},
+                _ => panic!(),
+            }
+        }        
+    
+    }
+    
+    if pos.len() == 0 && neg.len() == 0 {return ret;}
+    if pos.len() == 1 && neg.len() == 0 {assert!(pos[0] == C::identity()); return ret;}
+    if pos.len() == 0 && neg.len() == 1 {assert!(neg[0] == C::identity()); return ret;}
+    if pos.len() == 1 && neg.len() == 1 {assert!(pos[0] == neg[0]); return ret;}
+    panic!();
+}
+
 
  #[test]
 
@@ -551,8 +615,8 @@ fn bench_best(){
 #[test]
 
 fn randpoints_witness_test(){
-    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(500).collect();
-    let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(500).collect();
+    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(3).collect();
+    let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(3).collect();
     let res = best_multiexp(&scalars, &pts);
     pts.push((-res).into());
     scalars.push(Fq::ONE);
@@ -560,4 +624,69 @@ fn randpoints_witness_test(){
     let regf = compute_divisor_witness(pts.clone());
 
     let _ : Vec<()> = pts.into_iter().map(|pt| assert!(regf.ev(pt) == F::ZERO)).collect();
+}
+
+#[test]
+
+fn randpoints_witness_naive_test(){
+    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(500).collect();
+    let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(500).collect();
+    let res = best_multiexp(&scalars, &pts);
+    pts.push((-res).into());
+    scalars.push(Fq::ONE);
+
+    let _ = compute_divisor_witness_naive(pts.clone());
+
+}
+
+#[test]
+
+fn randpoints_witness_bench(){
+    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(1023).collect();
+    let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(1023).collect();
+    let res = best_multiexp(&scalars, &pts);
+    pts.push((-res).into());
+    scalars.push(Fq::ONE);
+
+    let start = SystemTime::now();
+    compute_divisor_witness(pts.clone());
+    println!("Computed regular function vanishing in 1024 random points in {} ms", start.elapsed().unwrap().as_millis());
+
+    let start = SystemTime::now();
+    compute_divisor_witness_naive(pts.clone());
+    println!("Computed configuration of lines vanishing in 1024 random points in {} ms", start.elapsed().unwrap().as_millis());
+
+    let start = SystemTime::now();
+    best_multiexp(&scalars, &pts.clone());
+    println!("Computed sum of 1024 random points in {} ms using msm", start.elapsed().unwrap().as_millis());
+
+    let start = SystemTime::now();
+    pts.clone().iter().fold(Grumpkin::identity(), |acc,upd| (acc + upd).into());
+    println!("Computed sum of 1024 random points in {} ms naively", start.elapsed().unwrap().as_millis());
+
+    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(31).collect();
+    let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(31).collect();
+    let res = best_multiexp(&scalars, &pts);
+    pts.push((-res).into());
+    scalars.push(Fq::ONE);
+
+    let start = SystemTime::now();
+    for _ in 0..32 {
+        compute_divisor_witness(pts.clone());    
+    }
+    println!("Computed regular function vanishing in 32 random points 32 times in {} ms", start.elapsed().unwrap().as_millis());
+
+    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(1).collect();
+    let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(1).collect();
+    let res = best_multiexp(&scalars, &pts);
+    pts.push((-res).into());
+    scalars.push(Fq::ONE);
+
+    let start = SystemTime::now();
+    for _ in 0..512 {
+        compute_divisor_witness(pts.clone());    
+    }
+    println!("Computed regular function vanishing in 2 points 512 times in {} ms", start.elapsed().unwrap().as_millis());
+
+
 }

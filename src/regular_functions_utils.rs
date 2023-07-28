@@ -13,7 +13,8 @@ use rand::{Rng, random};
 
 type Grumpkin = grumpkin::G1;
 
-trait FftPrecomp {
+
+pub trait FftPrecomp {
     /// returns 2^exp-th power of omega
     fn omega_pow(exp2: u32) -> Self;
     /// returns 2^exp-th power of omega inverse
@@ -22,30 +23,16 @@ trait FftPrecomp {
     fn half_pow(exp: u64) -> Self;
 }
 
-impl FftPrecomp for F {
-    fn omega_pow(exp2: u32) -> F {
-        F::ROOT_OF_UNITY.pow([(2 as u64).pow(exp2)])
-    }
-
-    fn omega_pow_inv(exp2: u32) -> F {
-        F::ROOT_OF_UNITY_INV.pow([(2 as u64).pow(exp2)])
-    }
-
-    fn half_pow(exp: u64) -> F {
-        F::TWO_INV.pow([exp])
-    } 
-}
-
 #[derive(Clone)]
-pub struct Polynomial <F: PrimeField> { // this seems to be re-doing some work from halo2::poly...
+pub struct Polynomial <F: PrimeField + FftPrecomp> { // this seems to be re-doing some work from halo2::poly...
     pub poly: Vec<F>,
 }
 
-pub fn poly<T:IntoIterator>(it: T) -> Polynomial<T::Item> where T::Item : PrimeField {
+pub fn poly<T:IntoIterator>(it: T) -> Polynomial<T::Item> where T::Item : PrimeField+FftPrecomp {
     Polynomial::new(it.into_iter().collect())
 }
 
-impl<F: PrimeField> Polynomial<F>{
+impl<F: PrimeField + FftPrecomp> Polynomial<F>{
 
     pub fn new(poly: Vec<F>)->Self{
         Polynomial{poly}
@@ -117,17 +104,17 @@ impl<F: PrimeField> Polynomial<F>{
         let length = self.poly.len() + other.poly.len()-1;
         let loglength = log2_floor(length)+1;
 
-        let fgsds = F::ZERO; // amulet of protection against crab demons
-
         let padded_length = (2 as usize).pow(loglength);
-        let mut a : Vec<F> = (&self.poly).into_iter().chain(repeat(&fgsds)).take(padded_length).map(|x|*x).collect();
-        let mut b : Vec<F> = (&other.poly).into_iter().chain(repeat(&fgsds)).take(padded_length).map(|x|*x).collect();
+        let mut a : Vec<F> = (self.poly).iter().chain(repeat(&F::ZERO)).take(padded_length).map(|x|*x).collect();
+        let mut b : Vec<F> = (other.poly).iter().chain(repeat(&F::ZERO)).take(padded_length).map(|x|*x).collect();
         assert!(F::S >= loglength);
-        let omega = F::ROOT_OF_UNITY.pow([(2 as u64).pow((F::S-loglength))]); //this will produce a root of unity of order loglength
-        let omega_inv = F::ROOT_OF_UNITY_INV.pow([(2 as u64).pow((F::S-loglength))]);
+        let omega = F::omega_pow(F::S-loglength);
+        //F::ROOT_OF_UNITY.pow([(2 as u64).pow((F::S-loglength))]); //this will produce a root of unity of order loglength
+        let omega_inv = F::omega_pow_inv(F::S-loglength);
+        //F::ROOT_OF_UNITY_INV.pow([(2 as u64).pow((F::S-loglength))]);
 
-
-        let scaling = F::from_str_vartime(&format!("{}", padded_length)).unwrap().invert().unwrap();
+        let scaling = F::half_pow(loglength as u64);
+        //F::from_str_vartime(&format!("{}", padded_length)).unwrap().invert().unwrap();
 
         best_fft(&mut a, omega, loglength);
         best_fft(&mut b, omega, loglength);
@@ -144,7 +131,7 @@ impl<F: PrimeField> Polynomial<F>{
 }
 
 
-impl<F: PrimeField> Display for Polynomial<F>{
+impl<F: PrimeField + FftPrecomp> Display for Polynomial<F>{
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error>{
         let poly = &self.poly;
         write!(
@@ -177,7 +164,7 @@ impl<F: PrimeField> Display for Polynomial<F>{
     }
 }
 
-impl<F: PrimeField> Shr<usize> for &Polynomial<F>{
+impl<F: PrimeField + FftPrecomp> Shr<usize> for &Polynomial<F>{
 
     type Output = Polynomial<F>;
 
@@ -188,18 +175,18 @@ impl<F: PrimeField> Shr<usize> for &Polynomial<F>{
 
 }
 
-impl<F: PrimeField> Add for &Polynomial<F>{
+impl<F: PrimeField + FftPrecomp> Add for &Polynomial<F>{
     
     type Output = Polynomial<F>;
 
     fn add(self, other: Self) -> Self::Output{
         let max_len = cmp::max(self.poly.len(), other.poly.len());
 
-        let fgsds = F::ZERO; // amulet of protection against crab demons
+//        let fgsds = F::ZERO; // amulet of protection against crab demons
 
         let sum : Vec<F> =
-            (&self.poly).into_iter().chain(repeat(&fgsds))
-            .zip((&other.poly).into_iter().chain(repeat(&fgsds)))
+            (self.poly).iter().chain(repeat(&F::ZERO))
+            .zip((other.poly).iter().chain(repeat(&F::ZERO)))
             .map(|(x,y)|*x+y)
             .take(max_len).collect();
 
@@ -219,7 +206,7 @@ fn log2_floor(num: usize) -> u32 {
     pow
 }
 
-impl<F:PrimeField> Mul for &Polynomial<F>{
+impl<F:PrimeField+FftPrecomp> Mul for &Polynomial<F>{
     type Output = Polynomial<F>;
 
     fn mul(self, other: Self) -> Self::Output{
@@ -232,12 +219,12 @@ impl<F:PrimeField> Mul for &Polynomial<F>{
 
 #[derive(Clone)]
 /// A function of the form a(x) + y*b(x) on a curve.
-pub struct RegularFunction<C: CurveExt>{
+pub struct RegularFunction<C: CurveExt> where C::Base : FftPrecomp{
     a: Polynomial<C::Base>,
     b: Polynomial<C::Base>,
 }
 
-impl<C: CurveExt> RegularFunction<C>{
+impl<C: CurveExt> RegularFunction<C> where C::Base : FftPrecomp{
     pub fn ev(&self, pt: C) -> C::Base{
         let (x, y, z) = pt.jacobian_coordinates();
         let zinv = z.invert().unwrap();
@@ -267,7 +254,7 @@ impl<C: CurveExt> RegularFunction<C>{
     }
 }
 
-impl<C: CurveExt> Add for &RegularFunction<C>{
+impl<C: CurveExt> Add for &RegularFunction<C> where C::Base : FftPrecomp{
     type Output = RegularFunction<C>;
 
     fn add(self, other: Self) -> Self::Output{
@@ -276,7 +263,7 @@ impl<C: CurveExt> Add for &RegularFunction<C>{
 }
 
 
-impl<C: CurveExt> Mul for &RegularFunction<C>{
+impl<C: CurveExt> Mul for &RegularFunction<C> where C::Base : FftPrecomp{
     type Output = RegularFunction<C>;
 
     fn mul(self, other: Self) -> Self::Output{
@@ -295,7 +282,7 @@ fn felt_from_u64<Fz: PrimeField>(d: u64) -> Fz {
 // now, the interesting part starts
 
 /// this function returns a line passing through a pair of points
-pub fn linefunc<C: CurveExt>(a: &C, b: &C) -> RegularFunction<C> {
+pub fn linefunc<C: CurveExt>(a: &C, b: &C) -> RegularFunction<C> where C::Base : FftPrecomp{
 
     let (ax, ay, az) = projective_coords(a);
     let (bx, by, bz) = projective_coords(b);
@@ -321,13 +308,13 @@ pub fn linefunc<C: CurveExt>(a: &C, b: &C) -> RegularFunction<C> {
 /// 2) additional "output" point, such that sum of inputs + output = 0
 /// 3) a regular function which vanishes exactly in all inputs and output
 /// they can be merged together by composing outputs
-pub struct Propagation<C: CurveExt>{
+pub struct Propagation<C: CurveExt> where C::Base : FftPrecomp{
     inputs: Vec<C>,
     output: C,
     wtns: RegularFunction<C>
 }
 
-impl<C: CurveExt> Propagation<C>{
+impl<C: CurveExt> Propagation<C> where C::Base : FftPrecomp{
     
     pub fn from_point(pt: C) -> Self{
         if pt == C::identity() {return Self::empty()}
@@ -416,14 +403,14 @@ impl<C: CurveExt> Propagation<C>{
 
 
 #[derive(Clone)]
-pub enum MaybePair<C: CurveExt>{
+pub enum MaybePair<C: CurveExt> where C::Base : FftPrecomp{
     Unit(Propagation<C>),
     Pair(Propagation<C>, Propagation<C>),
 }
 
 #[derive(Clone)]
 /// this atrocity is needed to call parallelize
-pub enum MaybePairGlue<C: CurveExt>{
+pub enum MaybePairGlue<C: CurveExt> where C::Base : FftPrecomp{
     In(MaybePair<C>),
     Out(Propagation<C>),
 }
@@ -457,7 +444,7 @@ pub fn gen_random_pt<C: CurveExt>() -> C {
     hasher(&tmp.to_le_bytes())
 }
 
-pub fn compute_divisor_witness_partial<C: CurveExt>(pts: Vec<C>)-> (RegularFunction<C>, C) {
+pub fn compute_divisor_witness_partial<C: CurveExt>(pts: Vec<C>)-> (RegularFunction<C>, C) where C::Base : FftPrecomp{
     let mut tmp = vec![];
     if pts.len()==0 {return (RegularFunction::from_const(C::Base::ONE), C::identity())}
     let mut i = 0;
@@ -480,24 +467,24 @@ pub fn compute_divisor_witness_partial<C: CurveExt>(pts: Vec<C>)-> (RegularFunct
 // }
 
 /// computes a regular function vanishing in a collection of points, panics if the sum is nonzero
-pub fn compute_divisor_witness<C: CurveExt>(pts: Vec<C>)-> RegularFunction<C> {
+pub fn compute_divisor_witness<C: CurveExt>(pts: Vec<C>)-> RegularFunction<C> where C::Base : FftPrecomp{
     let tmp = compute_divisor_witness_partial(pts);
     if tmp.1 != C::identity() {panic!()}
     tmp.0
 }
 
 /// a collection of numerator and denominator lines
-pub struct Arrangement<C: CurveExt>{
+pub struct Arrangement<C: CurveExt> where C::Base : FftPrecomp{
     pos: Vec<RegularFunction<C>>,
     neg: Vec<RegularFunction<C>>,
 }
 
-pub enum Glue<C: CurveExt>{
+pub enum Glue<C: CurveExt> where C::Base : FftPrecomp{
     In(C,C),
     Out(RegularFunction<C>, C),
 }
 
-fn f<C: CurveExt>(chunk: &mut [Glue<C>]) {
+fn f<C: CurveExt>(chunk: &mut [Glue<C>]) where C::Base : FftPrecomp{
     for mut tmp in chunk{
         match tmp {
             Glue::In(a,b) => {let q:C = *a+*b; *tmp = Glue::Out(linefunc(&a,&b), -q)},
@@ -506,7 +493,7 @@ fn f<C: CurveExt>(chunk: &mut [Glue<C>]) {
     }
 }
 
-pub fn compute_divisor_witness_naive<C: CurveExt>(pts: Vec<C>) -> Arrangement<C> {
+pub fn compute_divisor_witness_naive<C: CurveExt>(pts: Vec<C>) -> Arrangement<C> where C::Base : FftPrecomp{
     let mut pos = pts.clone();
     let mut neg = vec![];
 

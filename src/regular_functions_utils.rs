@@ -1,9 +1,9 @@
 use ff::{PrimeField, Field};
-use group::{Curve, prime::PrimeCurveAffine};
+use group::{Curve, prime::PrimeCurveAffine, Group};
 use num_bigint::{BigUint, RandomBits};
 use num_traits::Num;
 use halo2::{arithmetic::{self, parallelize, best_fft, FftGroup, eval_polynomial, kate_division, best_multiexp}, poly::{commitment::MSM, ipa::{msm::MSMIPA, commitment::ParamsIPA}}};
-use halo2curves::{CurveAffine, bn256, grumpkin, Coordinates, CurveExt};
+use halo2curves::{CurveAffine, bn256, grumpkin::{self, G1Affine}, Coordinates, CurveExt};
 use halo2curves::bn256::Fr as F;
 use halo2curves::grumpkin::Fr as Fq;
 use rand_core::OsRng;
@@ -11,7 +11,7 @@ use subtle::CtOption;
 use std::{ops::{Shl, Add, Mul, Shr}, cmp, iter::*, fmt::{Display, Formatter}, time::SystemTime};
 use rand::{Rng, random};
 
-type Grumpkin = grumpkin::G1Affine;
+type Grumpkin = grumpkin::G1;
 
 #[derive(Clone)]
 pub struct Polynomial <F: PrimeField> { // this seems to be re-doing some work from halo2::poly...
@@ -209,23 +209,29 @@ impl<F:PrimeField> Mul for &Polynomial<F>{
 
 #[derive(Clone)]
 /// A function of the form a(x) + y*b(x) on a curve.
-pub struct RegularFunction<C: CurveAffine>{
+pub struct RegularFunction<C: CurveExt>{
     a: Polynomial<C::Base>,
     b: Polynomial<C::Base>,
 }
 
-impl<C: CurveAffine> RegularFunction<C>{
-    pub fn ev(&self, pt: C) -> C::Base{
-        let pt = pt.coordinates().unwrap();
-        self.a.ev(*pt.x()) + self.b.ev(*pt.x())*pt.y()
+impl<C: CurveExt> RegularFunction<C>{
+    pub fn ev(&self, pt: C::Affine) -> C::Base{
+        let pt : C = pt.into();
+        let (x, y, _) = pt.jacobian_coordinates();
+        self.ev_unchecked(x, y)
     }
 
-    pub fn ev_unchecked(self, x: C::Base, y: C::Base) -> C::Base{
+    pub fn ev_unchecked(&self, x: C::Base, y: C::Base) -> C::Base{
         self.a.ev(x) + self.b.ev(x)*y
     }
 
     pub fn from_const(x: C::Base) -> Self{
         Self::new(Polynomial::new(vec![x]), Polynomial::new(vec![]))
+    }
+
+    // returns ax+by+c
+    pub fn from_line (a: C::Base, b: C::Base, c: C::Base) -> Self {
+        Self::new(Polynomial::new(vec![c,a]), Polynomial::new(vec![b]))
     }
 
     pub fn new(a: Polynomial<C::Base>, b: Polynomial<C::Base>) -> Self{
@@ -237,7 +243,7 @@ impl<C: CurveAffine> RegularFunction<C>{
     }
 }
 
-impl<C: CurveAffine> Add for &RegularFunction<C>{
+impl<C: CurveExt> Add for &RegularFunction<C>{
     type Output = RegularFunction<C>;
 
     fn add(self, other: Self) -> Self::Output{
@@ -246,7 +252,7 @@ impl<C: CurveAffine> Add for &RegularFunction<C>{
 }
 
 
-impl<C: CurveAffine> Mul for &RegularFunction<C>{
+impl<C: CurveExt> Mul for &RegularFunction<C>{
     type Output = RegularFunction<C>;
 
     fn mul(self, other: Self) -> Self::Output{
@@ -265,61 +271,24 @@ fn felt_from_u64<Fz: PrimeField>(d: u64) -> Fz {
 // now, the interesting part starts
 
 /// this function returns a line passing through a pair of points
-/// highest coefficient is guaranteed to be 1, i.e. it is always of the form y+ax+b or x+a
-/// if both points are 0, it will panic
-pub fn linefunc<C: CurveAffine>(a: &C, b: &C) -> RegularFunction<C>{
-    let _a:Option<Coordinates<C>> = a.coordinates().into();
-    let _b:Option<Coordinates<C>> = b.coordinates().into();
+pub fn linefunc<C: CurveExt>(a: &C, b: &C) -> RegularFunction<C> {
 
-    // process cases where a or b are 0
-    match (_a,_b) {
-        (None, None) => panic!(),
-        (Some(q), None) => return
-                            RegularFunction::new(
-                                Polynomial::new(vec![-*q.x(), C::Base::ONE]),
-                                Polynomial::new(vec![C::Base::ZERO])
-                                )
-                            ,
-        (Some(q), None) => return
-                            RegularFunction::new(
-                                Polynomial::new(vec![-*q.x(), C::Base::ONE]),
-                                Polynomial::new(vec![C::Base::ZERO])
-                                )
-                            ,   
-        _ => (),
+    let (ax, ay, az) = a.jacobian_coordinates();
+    let (bx, by, bz) = b.jacobian_coordinates();
+
+    let lz = ax*by - ay*bx;
+    let lx = ay*bz - az*by;
+    let ly = az*bx - ax*bz; 
+
+    if !(lx.is_zero_vartime()) || !(ly.is_zero_vartime()) || !(lz.is_zero_vartime()) {
+        return RegularFunction::from_line(lx, ly, lz) ;
     }
 
-    // another case with vertical line, case where a = -b
-    // note: this unwrap never fails, because a and c = 0 implies b = 0, which would panic on the previous step
-    if *a == -*b {return RegularFunction::new(
-                            Polynomial::new(vec![-*_a.unwrap().x(), C::Base::ONE]),
-                            Polynomial::new(vec![C::Base::ZERO])
-        )}
+    let c = -(*a+b);
 
-    let c = -(*a+*b);
-    let c : &C = &c.into();
+    let (cx, cy, cz) = c.jacobian_coordinates();
 
-    let b = if a == b {c} else {b};// if a == b we replace b by c, to avoid dealing with tangent case
-
-    let a_coords = a.coordinates().unwrap();
-    let ax = a_coords.x();
-    let ay = a_coords.y();
-
-    let b_coords = b.coordinates().unwrap();
-    let bx = b_coords.x();
-    let by = b_coords.y();
-
-    // create function (bx-ax)y - (by-ay)x
-    let mut line = RegularFunction::<C>::new(
-                    Polynomial::new(vec![C::Base::ZERO, *ay - *by]),
-                    Polynomial::new(vec![*bx - *ax])
-                );
-    
-    // offset to ensure it vanishes in point a
-    line = &line + &RegularFunction::from_const(-line.ev(*a));
-
-    // rescale by coefficient of y
-    line.scale(line.b.poly[0].invert().unwrap())
+    return RegularFunction::from_line(ay*cz - az*cy, az*cx-ax*cz, ax*cy - ay*cx);
 }
 
 #[derive(Clone)]
@@ -328,13 +297,13 @@ pub fn linefunc<C: CurveAffine>(a: &C, b: &C) -> RegularFunction<C>{
 /// 2) additional "output" point, such that sum of inputs + output = 0
 /// 3) a regular function which vanishes exactly in all inputs and output
 /// they can be merged together by composing outputs
-pub struct Propagation<C: CurveAffine>{
+pub struct Propagation<C: CurveExt>{
     inputs: Vec<C>,
     output: C,
     wtns: RegularFunction<C>
 }
 
-impl<C: CurveAffine> Propagation<C>{
+impl<C: CurveExt> Propagation<C>{
     
     pub fn from_point(pt: C) -> Self{
         if pt == C::identity() {return Self::empty()}
@@ -348,40 +317,25 @@ impl<C: CurveAffine> Propagation<C>{
     pub fn merge(a: Self, b: Self) -> Self {
         let inputs = a.inputs.into_iter().chain(b.inputs.into_iter()).collect();
         let output = a.output+b.output;
-        
-        let ao = a.output.coordinates();
-        let bo = b.output.coordinates();
 
-        let ao : Option<Coordinates<C>> = ao.into();
-        let bo : Option<Coordinates<C>> = bo.into();
-        
-        match (ao, bo) {
+        let (ax, _, az)= a.output.jacobian_coordinates();
+        let (bx, _, bz) = b.output.jacobian_coordinates();
 
-            (None, _) => {
-                let wtns = &a.wtns*&b.wtns;
-                return Propagation{ inputs, output: output.into(), wtns }
-                },
-            (_, None) => {
-                let wtns = &a.wtns*&b.wtns;
-                return Propagation{ inputs, output: output.into(), wtns }
-                },
-            _=>()
-        };
-
-        let ao = ao.unwrap();
-        let bo = bo.unwrap();
-
-        let ax = ao.x();
-        let bx = bo.x();
+        if az.is_zero_vartime() || bz.is_zero_vartime() {
+            return Propagation { inputs, output, wtns : &a.wtns*&b.wtns }
+        }
 
         let numerator = &a.wtns * &(&b.wtns * &linefunc(&(-a.output), &(-b.output)));
 
         let num_a = numerator.a;
         let num_b = numerator.b;
 
-        let wtns = RegularFunction::new(num_a.kate_div(*ax).kate_div(*bx), num_b.kate_div(*ax).kate_div(*bx));
+        let ax = ax*(az.invert().unwrap());
+        let bx = bx*(bz.invert().unwrap());
 
-        Propagation { inputs, output: output.into(), wtns }
+        let wtns = RegularFunction::new(num_a.kate_div(ax).kate_div(bx), num_b.kate_div(ax).kate_div(bx));
+
+        Propagation { inputs, output: output, wtns }
     }
 
 
@@ -430,61 +384,61 @@ impl<C: CurveAffine> Propagation<C>{
 
 
 #[derive(Clone)]
-pub enum MaybePair<C: CurveAffine>{
+pub enum MaybePair<C: CurveExt>{
     Unit(Propagation<C>),
     Pair(Propagation<C>, Propagation<C>),
 }
 
 #[derive(Clone)]
 /// this atrocity is needed to call parallelize
-pub enum MaybePairGlue<C: CurveAffine>{
+pub enum MaybePairGlue<C: CurveExt>{
     In(MaybePair<C>),
     Out(Propagation<C>),
 }
 
 // utility functions for testing
 
-pub fn gen_random_pt<C: CurveAffine>() -> C {
+pub fn gen_random_pt<C: CurveExt>() -> C {
     let tmp : u128 = random();
-    let hasher = C::CurveExt::hash_to_curve("TEST ONLY");
-    hasher(&tmp.to_le_bytes()).to_affine()
+    let hasher = C::hash_to_curve("TEST ONLY");
+    hasher(&tmp.to_le_bytes())
 }
 
 
 /// computes a regular function vanishing in a collection of points and minus their sum
-pub fn compute_divisor_witness_partial<C: CurveAffine>(pts: Vec<C>)-> (RegularFunction<C>, C) {
+pub fn compute_divisor_witness_partial<C: CurveExt>(pts: Vec<C>)-> (RegularFunction<C>, C) {
     let tmp = Propagation::group_merge(pts.into_iter().map(Propagation::from_point).collect());
     (tmp.wtns, tmp.output)
 }
 
 /// computes a regular function vanishing in a collection of points, panics if the sum is nonzero
-pub fn compute_divisor_witness<C: CurveAffine>(pts: Vec<C>)-> RegularFunction<C> {
+pub fn compute_divisor_witness<C: CurveExt>(pts: Vec<C>)-> RegularFunction<C> {
     let tmp = compute_divisor_witness_partial(pts);
     if tmp.1 != C::identity() {panic!()}
     tmp.0
 }
 
 /// a collection of numerator and denominator lines
-pub struct Arrangement<C: CurveAffine>{
+pub struct Arrangement<C: CurveExt>{
     pos: Vec<RegularFunction<C>>,
     neg: Vec<RegularFunction<C>>,
 }
 
-pub enum Glue<C: CurveAffine>{
+pub enum Glue<C: CurveExt>{
     In(C,C),
     Out(RegularFunction<C>, C),
 }
 
-fn f<C: CurveAffine>(chunk: &mut [Glue<C>]) {
+fn f<C: CurveExt>(chunk: &mut [Glue<C>]) {
     for mut tmp in chunk{
         match tmp {
-            Glue::In(a,b) => {let q:C = (*a+*b).into(); *tmp = Glue::Out(linefunc(&a,&b), -q)},
+            Glue::In(a,b) => {let q:C = *a+*b; *tmp = Glue::Out(linefunc(&a,&b), -q)},
             _ => panic!(),
         }
     }
 }
 
-pub fn compute_divisor_witness_naive<C: CurveAffine>(pts: Vec<C>) -> Arrangement<C> {
+pub fn compute_divisor_witness_naive<C: CurveExt>(pts: Vec<C>) -> Arrangement<C> {
     let mut pos = pts.clone();
     let mut neg = vec![];
 
@@ -493,8 +447,12 @@ pub fn compute_divisor_witness_naive<C: CurveAffine>(pts: Vec<C>) -> Arrangement
     let mut tmp = vec![];
 
     while pos.len()>1 || neg.len()>1 {
+        
         while pos.len()>1 {
-            tmp.push(Glue::In(pos.pop().unwrap(), pos.pop().unwrap()));
+            let inc1 = pos.pop().unwrap();
+            if inc1 != C::identity() {
+                tmp.push(Glue::In(inc1, pos.pop().unwrap()))
+            }
         }
 
         parallelize(&mut tmp, |chunk, _|f(chunk));
@@ -507,7 +465,10 @@ pub fn compute_divisor_witness_naive<C: CurveAffine>(pts: Vec<C>) -> Arrangement
         }
 
         while neg.len()>1 {
-            tmp.push(Glue::In(neg.pop().unwrap(), neg.pop().unwrap()));
+            let inc1 = neg.pop().unwrap();
+            if inc1 != C::identity() {
+                tmp.push(Glue::In(inc1, neg.pop().unwrap()))
+            }
         }
 
         parallelize(&mut tmp, |chunk, _|f(chunk));
@@ -616,12 +577,12 @@ fn bench_best(){
 
 fn randpoints_witness_test(){
     let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(3).collect();
-    let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(3).collect();
+    let mut pts : Vec<grumpkin::G1Affine> = repeat(gen_random_pt::<Grumpkin>().into()).take(3).collect();
     let res = best_multiexp(&scalars, &pts);
     pts.push((-res).into());
     scalars.push(Fq::ONE);
 
-    let regf = compute_divisor_witness(pts.clone());
+    let regf = compute_divisor_witness::<Grumpkin>(pts.clone().iter().map(|x|x.into()).collect());
 
     let _ : Vec<()> = pts.into_iter().map(|pt| assert!(regf.ev(pt) == F::ZERO)).collect();
 }
@@ -631,8 +592,9 @@ fn randpoints_witness_test(){
 fn randpoints_witness_naive_test(){
     let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(500).collect();
     let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(500).collect();
-    let res = best_multiexp(&scalars, &pts);
-    pts.push((-res).into());
+    let bases : Vec<grumpkin::G1Affine> = pts.iter().map(|x|x.into()).collect();
+    let res = best_multiexp(&scalars, &bases);
+    pts.push((-res));
     scalars.push(Fq::ONE);
 
     let _ = compute_divisor_witness_naive(pts.clone());
@@ -642,10 +604,11 @@ fn randpoints_witness_naive_test(){
 #[test]
 
 fn randpoints_witness_bench(){
-    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(1023).collect();
-    let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(1023).collect();
-    let res = best_multiexp(&scalars, &pts);
-    pts.push((-res).into());
+    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(1024).collect();
+    let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(1024).collect();
+    let bases : Vec<grumpkin::G1Affine> = pts.iter().map(|x|x.into()).collect(); 
+    let res = best_multiexp(&scalars, &bases);
+    pts.push(-res);
     scalars.push(Fq::ONE);
 
     let start = SystemTime::now();
@@ -656,18 +619,33 @@ fn randpoints_witness_bench(){
     compute_divisor_witness_naive(pts.clone());
     println!("Computed configuration of lines vanishing in 1024 random points in {} ms", start.elapsed().unwrap().as_millis());
 
-    let start = SystemTime::now();
-    best_multiexp(&scalars, &pts.clone());
-    println!("Computed sum of 1024 random points in {} ms using msm", start.elapsed().unwrap().as_millis());
 
     let start = SystemTime::now();
-    pts.clone().iter().fold(Grumpkin::identity(), |acc,upd| (acc + upd).into());
-    println!("Computed sum of 1024 random points in {} ms naively", start.elapsed().unwrap().as_millis());
+    pts.clone().iter().fold(Grumpkin::identity(), |acc,upd| acc+upd);
+    println!("Computed sum of 1024 random points in {} ms in affine coords", start.elapsed().unwrap().as_millis());
+    
+    let start = SystemTime::now();
+    let num_threads = rayon_core::current_num_threads();
+    let chunk = pts.len() / num_threads;
+    let num_chunks = pts.chunks(chunk).len();
+    let mut results : Vec<Grumpkin>  = vec![Grumpkin::identity().into(); num_chunks];
+    rayon_core::scope(|scope|(
+        for (pt, acc) in pts.chunks(chunk).zip(results.iter_mut()) {
+            scope.spawn( move |_| *acc = pt.into_iter().map(|x|*x).fold(*acc, |acc, upd : Grumpkin| acc + upd));
+        } 
+    ));
+    
+//    assert!(results[0] != Grumpkin::identity());
+
+    assert!(results.iter().fold(Grumpkin::identity(), |a , b| a + b) == Grumpkin::identity());
+
+    println!("Computed sum of 1024 random points in {} ms in projective coordinates", start.elapsed().unwrap().as_millis());
 
     let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(31).collect();
     let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(31).collect();
-    let res = best_multiexp(&scalars, &pts);
-    pts.push((-res).into());
+    let bases : Vec<grumpkin::G1Affine> = pts.iter().map(|x|x.into()).collect();
+    let res = best_multiexp(&scalars, &bases);
+    pts.push((-res));
     scalars.push(Fq::ONE);
 
     let start = SystemTime::now();
@@ -675,18 +653,5 @@ fn randpoints_witness_bench(){
         compute_divisor_witness(pts.clone());    
     }
     println!("Computed regular function vanishing in 32 random points 32 times in {} ms", start.elapsed().unwrap().as_millis());
-
-    let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(1).collect();
-    let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(1).collect();
-    let res = best_multiexp(&scalars, &pts);
-    pts.push((-res).into());
-    scalars.push(Fq::ONE);
-
-    let start = SystemTime::now();
-    for _ in 0..512 {
-        compute_divisor_witness(pts.clone());    
-    }
-    println!("Computed regular function vanishing in 2 points 512 times in {} ms", start.elapsed().unwrap().as_millis());
-
 
 }

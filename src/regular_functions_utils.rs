@@ -663,6 +663,15 @@ fn randpoints_witness_test(){
 
 #[test]
 
+fn witness_with_zeros_test(){
+    let a = gen_random_pt::<Grumpkin>();
+    let pts : Vec<Grumpkin> = vec![Grumpkin::identity(), Grumpkin::identity(), Grumpkin::identity(), a, a, -a, Grumpkin::identity(), -a, a, -a];
+    let regf = compute_divisor_witness(pts.clone());
+    let _ : Vec<()> = pts.into_iter().map(|pt| assert!(if pt.is_identity().into(){true}else{regf.ev(pt) == F::ZERO})).collect();
+}
+
+#[test]
+
 fn randpoints_witness_naive_test(){
     let mut scalars : Vec<Fq> = repeat(Fq::ONE).take(500).collect();
     let mut pts : Vec<Grumpkin> = repeat(gen_random_pt()).take(500).collect();

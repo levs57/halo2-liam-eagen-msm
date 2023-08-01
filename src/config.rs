@@ -61,13 +61,17 @@ impl <F: PrimeField + Ord, C: CurveExt<Base = F>> LiamsGateNarrow<F,C>{
         let c = meta.advice_column_in(ThirdPhase);
 
         let s1 = meta.fixed_column(); // this is active if i%batch_size == 0
-        let s2 = meta.fixed_column(); // this is active in rows corresponding to sc_buckets
+//        let s2 = meta.fixed_column(); //deprecated, lets see if we can avoid using it completely 
         let s3 = meta.fixed_column(); // todo
+
+        let table = meta.fixed_column(); // lookup table
 
         let s_table = meta.fixed_column();
         let s_arith = meta.fixed_column();
         
         let constants = meta.fixed_column();
+
+        let v = meta.challenge_usable_after(SecondPhase); // lookup argument challenge
 
         meta.enable_equality(c);
 
@@ -86,57 +90,89 @@ impl <F: PrimeField + Ord, C: CurveExt<Base = F>> LiamsGateNarrow<F,C>{
             [s*gate]
         });
 
-        meta.create_gate("scalar from buckets", |meta|{
-            let sc = meta.query_advice(b, Rotation(0));
-            let b_rots : Vec<Expression<F>> = (0..BASE-1).into_iter().map(
-                    |i| meta.query_advice(b, Rotation(((i+1)*(NUM_LIMBS+1)) as i32))
-                ).collect();
-            // b[0] = b[NL+1] + 2*b[2*(NL+2)] + ... (B-1)*b[(NL+1)*(B-1)]
-            let mut gate = -sc;
-            for i in 0..BASE-1 {
-                gate = gate + e!(b_rots[i])*(F::from(digit_by_id(i) as u64));
-            }
-            // we activate it using selector s1, which itself is activated at condition (i % BATCH_SIZE == 0)
-            let s = meta.query_fixed(s1, Rotation(0));
-            [s*gate]
-        });
+        meta.create_gate("b gate", |meta|{
+            let b0 = meta.query_advice(b, Rotation(0));
 
-        meta.create_gate("limbs integrity check", |meta|{
-            let integrity = meta.query_advice(b, Rotation(0));
-            let b_rots : Vec<Expression<F>> = (0..BASE-1).into_iter().map(
-                |i| meta.query_advice(b, Rotation(((i+1)*(NUM_LIMBS+1)) as i32))
-            ).collect();            // b[0] = b[NL+1] + b[2*(NL+2)] + ... b[(NL+1)*(B-1)]
-            let mut gate = -integrity;
-            for i in 0..BASE-1 {
-                gate = gate + e!(b_rots[i]);
-            }
-            // we activate it using negative rotations of s1
-            let mut s = Expression::Constant(F::ZERO);
-            
-            for i in 0..NUM_LIMBS {
-                s = s + meta.query_fixed(s1, Rotation(-(1+i as i32)));
-            }
-
-            [s*gate]
-        });
-
-
-        meta.create_gate("bucket from limbs", |meta|{
-            let mut sc_bucket = meta.query_advice(b, Rotation(0));
-            
-            let b_rots : Vec<Expression<F>> = (0..NUM_LIMBS).into_iter().map(
+            let b_primary_offsets : Vec<_> = (0..NUM_LIMBS).into_iter().map(
                 |i|meta.query_advice(b, Rotation((1+i) as i32))
             ).collect();
-            // sc_bucket is decomposed into limbs
-            // b[0] == b[1] + BASE^{LOGTABLESIZE} b[2] + ... BASE^{LOGTABLESIZE*(NUM_LIMBS-1)} b[NUM_LIMBS]
-            let mut gate = -sc_bucket;
-            for i in 0..NUM_LIMBS {
-                gate = gate + e!(b_rots[i]) * F::from(BASE as u64).pow([(i*LOGTABLESIZE) as u64]);
-            }
-            let mut s = meta.query_fixed(s2, Rotation(0));
 
-            [s*gate]
+
+            let b_secondary_offsets : Vec<_> = (0..BASE-1).into_iter().map(
+                |i| meta.query_advice(b, Rotation(((i+1)*(NUM_LIMBS+1)) as i32))
+            ).collect();
+
+            let mut gate_sc_from_buckets = -e!(b0);
+            for i in 0..BASE-1 {
+                gate_sc_from_buckets = gate_sc_from_buckets + e!(b_secondary_offsets[i])*(F::from(digit_by_id(i) as u64));
+            }
+
+            let mut gate_limb_integrity_check = -e!(b0);
+            for i in 0..BASE-1 {
+                gate_limb_integrity_check = gate_limb_integrity_check + e!(b_secondary_offsets[i]);
+            }
+
+            let mut gate_bucket_from_limbs = -e!(b0);
+            for i in 0..NUM_LIMBS {
+                gate_bucket_from_limbs = gate_bucket_from_limbs + e!(b_primary_offsets[i]) * F::from(BASE as u64).pow([(i*LOGTABLESIZE) as u64]);
+            }
+
+            let s = meta.query_fixed(s1, Rotation(0));
+            
+            let mut s_prim = Expression::Constant(F::ZERO);
+            for i in 0..NUM_LIMBS {
+                s_prim = s_prim + meta.query_fixed(s1, Rotation(-(1+i as i32)));
+            }
+
+            let mut s_sec = Expression::Constant(F::ZERO);
+            for i in 0..BASE-1 {
+                s_sec = s_sec + meta.query_fixed(s1, Rotation(-(((1+i)*(NUM_LIMBS+1)) as i32)));
+                // this was previously s2; currently expressed through s1; we can replace it to multiple selectors
+            }
+
+            [s*gate_sc_from_buckets + s_prim*gate_limb_integrity_check + s_sec*gate_bucket_from_limbs]
+
         });
+
+        meta.create_gate("lookup", |meta|{
+            let c0 = meta.query_advice(c, Rotation(0));
+            let c1 = meta.query_advice(c, Rotation(1));
+            let cn1 = meta.query_advice(c, Rotation(-1));
+            let cnskip = meta.query_advice(c, Rotation(-(1 + SKIP as i32)));
+
+            let b1 = meta.query_advice(b, Rotation(1));
+            let v = meta.query_challenge(v);
+            let t = meta.query_fixed(table, Rotation(0));
+
+
+            // c[i+1] - c[i] = 1 / (v - b[i+1]) -- must be active on all cells corresponding to limbs / integrities from i = -1 
+            let gate_rhs_1 = (e!(c1) - e!(c0))*(e!(v)-e!(b1)) - Expression::Constant(F::from(1));
+            // c[i+1] - c[i-1] = 1/(v-b[i+1]) -- must be active for i corresponding to buckets - to jump over them
+            let gate_rhs_2 = (e!(c1) - cn1)*(e!(v)-e!(b1)) - Expression::Constant(F::from(1));
+            // c[i+1] - c[i-SKIP-1] = 1/(v-b[i+1]) -- must be active for i corresponding to scalars - to jump over them and end of batch empty space
+            let gate_rhs_3 = (e!(c1) - e!(cnskip))*(e!(v)-e!(b1)) - Expression::Constant(F::from(1));
+
+            let consts = meta.query_fixed(constants, Rotation(0)); // this is reusing part of the constants table...
+
+            // (c[1] - c[0] CONST - c[-(SKIP+1)](1 - CONST)) * (v-t) - b[1]
+            let gate_lhs = (c1 - c0*e!(consts) - cnskip*(Expression::Constant(F::from(1)) - consts))*(v-t) - b1;
+
+            let sel1 = meta.query_fixed(s3, Rotation(0)); // this is activated by its own selector s3
+            let mut sel2 = Expression::Constant(F::ZERO);
+            for i in 0..BASE-1 {
+                sel2 = sel2 + meta.query_fixed(s1, Rotation(-(((1+i)*(NUM_LIMBS+1)) as i32)));
+                // this was previously s2; currently expressed through s1; we can replace it to multiple selectors
+            }
+            let sel3 = meta.query_fixed(s1, Rotation(0)); // active after the SKIP, i.e. on the first row after sc
+
+            let s = meta.query_fixed(s_table, Rotation(0));
+
+            [sel1*gate_rhs_1 + sel2*gate_rhs_2 + sel3*gate_rhs_3 + s*gate_lhs]
+        });
+
+        // meta.create_gate("lookup lhs accumulator (jump 1)", |meta|{
+
+        // });
     }
 
 }

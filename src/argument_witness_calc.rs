@@ -51,7 +51,7 @@ fn precompute_multiplicities<C: CurveExt>(pt: &C, base: u8) -> Vec<C>{
 }
 
 /// Querying order of a prime field is a bit messy, it gives a string of unspecified format. Therefore:
-fn order<Fz: PrimeField>() -> BigInt{
+pub fn order<Fz: PrimeField>() -> BigInt{
     BigInt::from_bytes_le(Sign::Plus, (-Fz::ONE).to_repr().as_ref()) + BigInt::one()
 }
 

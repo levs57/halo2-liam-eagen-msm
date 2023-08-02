@@ -8,7 +8,7 @@ edition = "2021"
 num-bigint = { version = "0.4", features = ["rand"] }
 num-integer = "0.1"
 num-traits = "0.2"
-halo2 = { package = "halo2_proofs", git = "https://github.com/privacy-scaling-explorations/halo2", features = ["circuit-params"] }
+halo2 = { package = "halo2_proofs", git = "https://github.com/levs57/halo2", features = ["circuit-params"] }
 halo2curves = { package = "halo2curves", git = "https://github.com/privacy-scaling-explorations/halo2curves"}
 # halo2 = { package = "halo2_proofs", path = "../halo2/halo2_proofs" }
 group = "0.13"

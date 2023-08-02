@@ -4,5 +4,7 @@ pub mod argument_witness_calc;
 
 pub mod precomputed_fft_data;
 
+pub mod expr_blackbox;
+
 pub mod config;
 mod scripts;

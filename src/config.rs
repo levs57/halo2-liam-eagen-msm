@@ -167,34 +167,40 @@ impl <F: PrimeField + Ord + FftPrecomp, C: CurveExt<Base = F>> LiamsGateNarrow<F
             let cn1 = meta.query_advice(c, Rotation(-1));
             let cnskip = meta.query_advice(c, Rotation(-(1 + SKIP as i32)));
 
+            let b0 = meta.query_advice(b, Rotation(0));
             let b1 = meta.query_advice(b, Rotation(1));
             let v = meta.query_challenge(v);
             let t = meta.query_fixed(table, Rotation(0));
 
             // c[i+1] - c[i] = 1 / (v - b[i+1]) -- must be active on all cells corresponding to limbs / integrities from i = -1 
-            let gate_rhs_1 = (e!(c1) - e!(c0))*(e!(v)-e!(b1)) - Expression::Constant(F::from(1));
+            let gate_lookup_rhs_1 = (e!(c1) - e!(c0))*(e!(v)-e!(b1)) - Expression::Constant(F::from(1));
             // c[i+1] - c[i-1] = 1/(v-b[i+1]) -- must be active for i corresponding to buckets - to jump over them
-            let gate_rhs_2 = (e!(c1) - cn1)*(e!(v)-e!(b1)) - Expression::Constant(F::from(1));
+            let gate_lookup_rhs_2 = (e!(c1) - e!(cn1))*(e!(v)-e!(b1)) - Expression::Constant(F::from(1));
             // c[i+1] - c[i-SKIP-1] = 1/(v-b[i+1]) -- must be active for i corresponding to scalars - to jump over them and end of batch empty space
-            let gate_rhs_3 = (e!(c1) - e!(cnskip))*(e!(v)-e!(b1)) - Expression::Constant(F::from(1));
-
-            let consts = meta.query_fixed(constants, Rotation(0)); // this is reusing part of the constants table...
+            let gate_lookup_rhs_3 = (e!(c1) - e!(cnskip))*(e!(v)-e!(b1)) - Expression::Constant(F::from(1));
 
             // (c[1] - c[0] CONST - c[-(SKIP+1)](1 - CONST)) * (v-t) - b[1]
-            let gate_lhs = (c1 - c0*e!(consts) - cnskip*(Expression::Constant(F::from(1)) - consts))*(v-t) - b1;
+            let gate_lookup_lhs_1 = (e!(c0) - e!(cn1))*(e!(v)-e!(t)) + e!(b0);
+            let gate_lookup_lhs_2 = (c0 - e!(cnskip))*(v-t) + b0;
 
-            let sel1 = meta.query_fixed(s3, Rotation(0)); // this is activated by its own selector s3
-            let mut sel2 = Expression::Constant(F::ZERO);
+            let sr1 = meta.query_fixed(s3, Rotation(0)); // this is activated by its own selector s3
+            let mut sr2 = Expression::Constant(F::ZERO);
             for i in 0..BASE-1 {
-                sel2 = sel2 + meta.query_fixed(s1, Rotation(-(((1+i)*(NUM_LIMBS+1)) as i32)));
+                sr2 = sr2 + meta.query_fixed(s1, Rotation(-(((1+i)*(NUM_LIMBS+1)) as i32)));
                 // this was previously s2; currently expressed through s1; we can replace it to multiple selectors
             }
-            let sel3 = meta.query_fixed(s1, Rotation(0)); // active after the SKIP, i.e. on the first row after sc
+            let sr3 = meta.query_fixed(s1, Rotation(0)); // active after the SKIP, i.e. on the first row after sc
 
-            let s = meta.query_fixed(s_table, Rotation(0));
+            let s_table0 = meta.query_fixed(s_table, Rotation(0));
+            let s_tablen1 = meta.query_fixed(s_table, Rotation(-1));
+            let s_tableskip = meta.query_fixed(s_table, Rotation(SKIP as i32));
+
+            let sl1 = e!(s_tablen1) + s_tableskip;
+            let sl2 = s_table0 - s_tablen1;
 
 
-            [sel1*gate_rhs_1 + sel2*gate_rhs_2 + sel3*gate_rhs_3 + s*gate_lhs]
+            [sr1*gate_lookup_rhs_1 + sr2*gate_lookup_rhs_2 + sr3*gate_lookup_rhs_3
+            + sl1*gate_lookup_lhs_1 + sl2*gate_lookup_lhs_2]
         });
 
         meta.create_gate("rhs main", |meta|{

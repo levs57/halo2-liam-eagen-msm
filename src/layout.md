@@ -146,20 +146,24 @@ Now, we need to subtract the lhs.
 
 We declare the following gates:
 
-``lookup_lhs_1 = (c[1] - c[0])*(v-t) + b[1]``
-``lookup_lhs_2 = (c[1] - c[-1-S])*(v-t) + b[1]``
+``lookup_lhs_1 = (c[0] - c[-1])*(v-t) + b[0]``
+``lookup_lhs_2 = (c[0] - c[-1-S])*(v-t) + b[0]``
 
 We need to activate first one in every row corresponding to a table, except of the ones with that are ``i%BSIZE==0`` and live in ``(A1)``, on which we need to activate the second one.
 
 I did not manage to do it without introducing additional selectors, but I can do it using only one:
 
-Selector ``S_TABLE`` is defined as follows: it is nonzero in the whole region ``(B2)`` that the table populates (including skips), and it is either ``1`` or ``-1``, switching the sign at the end of each skip (i.e. in the end of each full batch). Out of the region (A1) there are no skips, and hence no sign switches anymore.
+Selector ``S_TABLE`` is defined as follows: it is nonzero in the whole region ``(B2)`` that the table populates (including skips), and it is either ``1`` or ``-1``, switching the sign at the end of each skip (i.e. in the end of each full batch). Out of the region (A1) there are no skips, and hence no sign switches anymore until the 1st value of the buffer zone after the region ``(A1)``.
 
-To obtain the second selector, we just compute ``S_TABLE - S_TABLE[-1]`` - due to the sign switching behavior, this is nonzero only at the row just after skip, and on the edges - the starting edge being activated is a desirable behavior, and end edge being activated doesn't matter, as we just sacrifice this ``c`` entry and not use it anymore.
+To obtain the second selector, we just compute ``S_TABLE - S_TABLE[-1]`` - due to the sign switching behavior, this is nonzero only at the row just after skip, and on the edges - the starting edge being activated is a desirable behavior, and end edge being activated doesn't matter, as we just sacrifice this ``c`` entry and not use it anymore (it is actually off by 1 from the end edge).
 
-To obtain the first selector, we compute ``S_TABLE + S_TABLE[S]`` - which is activated in all appropriate rows, and also in last skip ones, which doesn't matter because we have the buffer batch.
+To obtain the first selector, we compute ``S_TABLE[-1] + S_TABLE[S]`` - which is activated in all appropriate rows, in the skip rows of the buffer batch (which doesn't matter), and also **deactivated** in the row ``-S`` from the end. This means that this particular gate must be emulated (which is ok).
 
-An illustration:
+Therefore, we declare:
+
+``LOOKUP_GATE = (S_TABLE + S_TABLE[S])*lookup_lhs_1 + (S_TABLE - S_TABLE[-1])*lookup_lhs_2``
+
+An illustration (here, x means some value, s means skip, and consequent batches in the tail of the ``(A1)`` are selected with braces).
 
 Batch structure:
 
@@ -167,35 +171,17 @@ Batch structure:
 
 S_TABLE:
 
-``0000(+++++++++++)(-----------)(+++++++++++)------------0000``
+``0000(+++++++++++)(-----------)(+++++++++++)------------+000``
 
 S_TABLE-S_TABLE[-1]
 
-``0000(x0000000000)(x0000000000)(x0000000000)x00000000000x000 ``
+``0000(x0000000000)(x0000000000)(x0000000000)x000000000000x00 ``
 
-S_TABLE+S_TABLE[S]
+S_TABLE[-1]+S_TABLE[S]
 
-``0xxx(xxxxxxxx000)(xxxxxxxx000)(xxxxxxxx000)xxxxxxxxxxxx0000``
+``0xxx(xxxxxxxx000)(0xxxxxxx000)(0xxxxxxx000)0xxxxxxxx0xxx000``
 
-where ``Q`` is basically a selector to whether we need to jump. There are various ways of constructing such selector, to which I propose rotating ``S1`` forward: ``S1[N+B+]``
+This costs 2 additional rotations (and some nerve cells), but saves 1 selector column.
 
-activated at i % BATCH_SIZE == 0 aka s1
-
-integrity[i] = sc_limb[1][i] + sc_limb[2][i] + ... sc_limb[B-1][i]; for all i
-
-b[0] = b[NL] + b[2\*NL+2] + ... +b[(B-1)(NL+1)]; activated at (s1[-1] + ... s1[-NL])
-
-
-c[i+1] - c[i] = 1/(v-b[i])
-
-234233
-
-000010
-100010
-010001
-001000
-
-~2^15
-
-5^15
+---
 

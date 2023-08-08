@@ -1,4 +1,6 @@
 
+use std::vec;
+
 use num_bigint::{BigInt, RandomBits};
 use num_bigint::Sign as Sign;
 use num_traits::{Num, pow, One, Zero};
@@ -10,6 +12,8 @@ pub fn range_check(x: &BigInt) -> () {
     assert!(x < &threshold);
     assert!(x > &-threshold);
 }
+
+
 
 
 pub fn negbase_decompose(x: &BigInt, base: u8) -> Vec<u8>{
@@ -26,9 +30,16 @@ pub fn negbase_decompose(x: &BigInt, base: u8) -> Vec<u8>{
         acc.push(tmp[0] as u8);
         x = -((x-digit)/base);
     }
+    
     acc
 }
 
+
+pub enum Entry{
+    Scalar(BigInt),
+    Bucket(i128),
+    Limb(i128, u32),
+}
 
 /// used for indexing of digits, will return None if digit is 0
 pub fn id_by_digit(digit : u8) -> Option<usize> {
@@ -43,10 +54,51 @@ pub fn digit_by_id(id : usize) -> u8 {
     (id+1).try_into().unwrap()
 }
 
-/// Takes bigint as input, and computes the buckets
-/// Each bucket only has digits 0 and 1 in negbase representations
-pub fn buckets(x: &BigInt, base: u8) -> (){
+pub fn prepare_scalar_witness(sc: &BigInt, base: u8, num_digits: usize, logtable: usize) -> Vec<Vec<(Entry)>>{
+    let digits = negbase_decompose(sc, base);
+    assert!(digits.len() <= num_digits);
+    let num_limbs = (num_digits+logtable-1)/logtable;
+    
+    let mut ret = vec![];
 
+    for i in 0..(base as usize) {
+        ret.push(vec![]);
+        for j in 0..num_limbs+1 {
+            ret[i].push((0, 0))
+            }
+        }
+
+    for i in 0..digits.len() {
+        match id_by_digit(digits[i]) {
+            None => (),
+            Some(id) => {
+                ret[id+1][0].0 += pow(-(base as i128), i);
+                ret[id+1][i%logtable + 1].0 += pow(-(base as i128), i%logtable);
+                ret[id+1][i%logtable + 1].1 += pow(2 as u32, i%logtable);
+                ret[0][i%logtable+1].0 += pow(-(base as i128), i%logtable);
+                ret[0][i%logtable + 1].1 += pow(2 as u32, i%logtable);
+            }
+        }
+    }
+    
+    let mut ret_ = vec![];
+
+    for i in 0..(base as usize) {
+        ret_.push(vec![]);
+        for j in 0..num_limbs+1 {
+            ret_[i].push(
+                if (i==0) && (j==0) {
+                    Entry::Scalar(sc.clone())
+                } else if (j==0) {
+                    Entry::Bucket(ret[i][j].0)
+                } else {
+                    Entry::Limb(ret[i][j].0, ret[i][j].1)
+                }
+            )
+        }
+    }
+
+    ret_
 }
 
 #[test]

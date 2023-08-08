@@ -29,7 +29,7 @@ use rand::{Rng, random};
 
 type Grumpkin = grumpkin::G1;
 
-fn logb_ceil(x: &BigUint, base: u8) -> u8{
+pub fn logb_ceil(x: &BigUint, base: u8) -> u8{
     let mut x = x.clone();
     let mut i = 0;
     while (x > BigUint::zero()) {

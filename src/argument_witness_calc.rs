@@ -39,11 +39,11 @@ pub fn logb_ceil(x: &BigUint, base: u8) -> u8{
     i
 }
 
-/// Returns multiplicities of pt, from 1 to base 
-fn precompute_multiplicities<C: CurveExt>(pt: &C, base: u8) -> Vec<C>{
+/// Returns multiplicities of pt, from 1 to base-1 
+pub fn precompute_multiplicities<C: CurveExt>(pt: &C, base: u8) -> Vec<C>{
     let mut acc : C = *pt;
     let mut ret = vec![];
-    for _ in 0..base {
+    for _ in 1..base {
         ret.push(acc);
         acc = acc + *pt;
     }

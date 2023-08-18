@@ -1,6 +1,7 @@
 
 use std::vec;
 
+use ff::{Field, PrimeField};
 use num_bigint::{BigInt, RandomBits};
 use num_bigint::Sign as Sign;
 use num_traits::{Num, pow, One, Zero};
@@ -52,6 +53,27 @@ pub fn id_by_digit(digit : u8) -> Option<usize> {
 
 pub fn digit_by_id(id : usize) -> u8 {
     (id+1).try_into().unwrap()
+}
+
+pub fn table_entry_by_id<F: PrimeField>(base: u8, id: usize) -> F {
+    if id == 0 {return F::ZERO}
+    
+    let b = -F::from(base as u64);
+    let mut acc = F::ZERO;
+    let mut id = id;
+    let mut bits = vec![];
+    while id>0 {
+        bits.push(id&1);
+        id>>=1;
+    }
+
+    let l = bits.len();
+    for i in 0..l {
+        if bits[l-i-1]==1 {acc+=F::ONE}
+        acc *= b;
+    }
+    
+    acc
 }
 
 pub fn prepare_scalar_witness(sc: &BigInt, base: u8, num_digits: usize, logtable: usize) -> Vec<Vec<(Entry)>>{

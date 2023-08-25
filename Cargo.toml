@@ -1,7 +1,6 @@
 [package]
 name = "halo2-liam-eagen-msm"
 version = "0.1.0"
-authors = ["Lev Soukhanov <0xdeadfae@gmail.com>"]
 edition = "2021"
 
 [dependencies]

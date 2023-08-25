@@ -87,9 +87,9 @@ impl <F: Field> Chunk<F>{
 
 }
 
-/// a fixed column that knows how to populate it
-/// for some values of i will return default value None
-/// introduced because I want to populate the fixed tables in configure, not synthesize
+/// A fixed column that knows how to populate it.
+/// For some values of i will return default value None.
+/// Introduced because I want to populate the fixed tables in configure, not synthesize
 /// (populating fixed tables in synthesize feels like anti-pattern and I'm not signing up
 /// for any design decision that somehow led to this)
 pub struct Expansion<F: Field>{
@@ -121,8 +121,8 @@ impl <F: Field> Expansion<F> {
 
 }
 
-/// expansion table also knows map from table_id to position in a column
-/// this is used to populate lookup 
+/// Expansion table also knows map from table_id to position in a column.
+/// This is used to populate lookup.
 pub struct ExpansionTable<F: Field>{
     pub exp: Expansion<F>,
     pub map: Vec<usize>,
@@ -133,6 +133,7 @@ impl<F: Field> ExpansionTable<F> {
         ExpansionTable { exp: Expansion::new(meta), map: Vec::new() }
     }
 }
+
 
 #[derive(Clone)]
 pub struct LiamMSMConfig<F: PrimeField + Ord + FftPrecomp, C: CurveExt<Base = F>> {
@@ -213,7 +214,8 @@ impl <F: PrimeField + Ord + FftPrecomp, C: CurveExt<Base = F>> LiamMSMConfig<F,C
 
         let table = ExpansionTable::new(meta); // lookup table
 
-        let s_arith = meta.fixed_column();
+        let s_arith = Expansion::new(meta);
+
         let s_copy_from_b = Expansion::new(meta);
         
 //        let constants = meta.fixed_column();
@@ -228,17 +230,16 @@ impl <F: PrimeField + Ord + FftPrecomp, C: CurveExt<Base = F>> LiamMSMConfig<F,C
         // generic gate allowing arithmetic operations in column c
         // it also allows to copy data from column b, and from constants table as a side-effect
         meta.create_gate("arithmetic gate", |meta|{
-            let s = meta.query_fixed(s_arith, Rotation(-1));
+            let s = meta.query_fixed(s_arith.col, Rotation(-1));
             let b0 = meta.query_advice(b, Rotation(0)); 
             let cn0 = meta.query_advice(c, Rotation(0));
             let cn1 = meta.query_advice(c, Rotation(-1));
             let cn2 = meta.query_advice(c, Rotation(-2));
             let cn3 = meta.query_advice(c, Rotation(-3));
             let const0 = meta.query_fixed(table.exp.col, Rotation(0));
-            let const1 = meta.query_fixed(table.exp.col, Rotation(1));
-            // b * CONST + c[-3] * c[-2] + c[-1] * CONST[1] - c[0]
+            // c[-3] * c[-2] + c[-1] * CONST + b[0] - c[0] 
             //this allows to also reuse it to copy data from from column b
-            let gate = e!(b0)*e!(const0) + e!(cn3)*e!(cn2) + e!(cn1)*e!(const1) - e!(cn0);
+            let gate = e!(b0) + e!(cn3)*e!(cn2) + e!(cn1)*e!(const0) - e!(cn0);
             [s*gate]
         });
 
